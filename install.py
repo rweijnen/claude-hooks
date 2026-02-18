@@ -1,11 +1,17 @@
 #!/usr/bin/env python
 """Install Claude Code hooks.
 
-Copies hook scripts to ~/.claude/hooks/ and merges hook configuration
-into ~/.claude/settings.json. Optionally initializes git and creates
-a GitHub repository.
+Usage:
+    python install.py                 # Global install (~/.claude/)
+    python install.py --project DIR   # Project-local install (DIR/.claude/)
+    python install.py --project .     # Project-local install (current dir)
+
+Global installs go to ~/.claude/settings.json and affect all projects.
+Project-local installs go to DIR/.claude/settings.local.json and only
+affect that project -- useful for testing hooks in a sandbox.
 """
 
+import argparse
 import json
 import shutil
 import subprocess
@@ -14,36 +20,47 @@ from pathlib import Path
 
 REPO_DIR = Path(__file__).parent
 HOOKS_SRC = REPO_DIR / "hooks"
-CLAUDE_DIR = Path.home() / ".claude"
-HOOKS_DST = CLAUDE_DIR / "hooks"
-SETTINGS_FILE = CLAUDE_DIR / "settings.json"
-
-HOOKS_CONFIG = {
-    "PreToolUse": [
-        {
-            "matcher": "Bash",
-            "hooks": [{
-                "type": "command",
-                "command": "python \"$HOME/.claude/hooks/fix_bash_command.py\"",
-            }],
-        },
-        {
-            "matcher": "Write|Edit",
-            "hooks": [{
-                "type": "command",
-                "command": "python \"$HOME/.claude/hooks/check_file_content.py\"",
-            }],
-        },
-    ],
-}
 
 
-def copy_hooks():
-    """Copy all .py hook scripts to ~/.claude/hooks/."""
-    HOOKS_DST.mkdir(parents=True, exist_ok=True)
+def get_paths(project_dir=None):
+    """Return (hooks_dst, settings_file) for global or project-local install."""
+    if project_dir:
+        base = Path(project_dir).resolve() / ".claude"
+        return base / "hooks", base / "settings.local.json"
+    base = Path.home() / ".claude"
+    return base / "hooks", base / "settings.json"
+
+
+def hooks_config(hooks_dst):
+    """Build the hooks config block with the correct path to hook scripts."""
+    # Use forward slashes -- these run in Git Bash
+    dst = str(hooks_dst).replace("\\", "/")
+    return {
+        "PreToolUse": [
+            {
+                "matcher": "Bash",
+                "hooks": [{
+                    "type": "command",
+                    "command": f'python "{dst}/fix_bash_command.py"',
+                }],
+            },
+            {
+                "matcher": "Write|Edit",
+                "hooks": [{
+                    "type": "command",
+                    "command": f'python "{dst}/check_file_content.py"',
+                }],
+            },
+        ],
+    }
+
+
+def copy_hooks(hooks_dst):
+    """Copy all .py hook scripts to the target directory."""
+    hooks_dst.mkdir(parents=True, exist_ok=True)
     copied = 0
     for src in sorted(HOOKS_SRC.glob("*.py")):
-        dst = HOOKS_DST / src.name
+        dst = hooks_dst / src.name
         shutil.copy2(src, dst)
         print(f"  {src.name} -> {dst}")
         copied += 1
@@ -53,20 +70,21 @@ def copy_hooks():
     return copied
 
 
-def patch_settings():
-    """Merge hook configuration into ~/.claude/settings.json."""
+def patch_settings(settings_file, hooks_dst):
+    """Merge hook configuration into the settings file."""
     settings = {}
-    if SETTINGS_FILE.exists():
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+    if settings_file.exists():
+        with open(settings_file, "r", encoding="utf-8") as f:
             settings = json.load(f)
 
     settings.setdefault("hooks", {})
-    settings["hooks"]["PreToolUse"] = HOOKS_CONFIG["PreToolUse"]
+    settings["hooks"]["PreToolUse"] = hooks_config(hooks_dst)["PreToolUse"]
 
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+    settings_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(settings_file, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2)
         f.write("\n")
-    print(f"  Updated {SETTINGS_FILE}")
+    print(f"  Updated {settings_file}")
 
 
 def git_init():
@@ -102,23 +120,35 @@ def gh_create():
 
 
 def main():
-    print("Installing Claude Code hooks...\n")
+    parser = argparse.ArgumentParser(description="Install Claude Code hooks")
+    parser.add_argument(
+        "--project", metavar="DIR",
+        help="Install to a specific project directory (uses settings.local.json). "
+             "Omit for global install to ~/.claude/",
+    )
+    args = parser.parse_args()
+
+    hooks_dst, settings_file = get_paths(args.project)
+    scope = f"project ({Path(args.project).resolve()})" if args.project else "global (~/.claude/)"
+
+    print(f"Installing Claude Code hooks ({scope})...\n")
 
     print("1. Copying hook scripts:")
-    count = copy_hooks()
+    count = copy_hooks(hooks_dst)
     print(f"   {count} hook(s) installed\n")
 
-    print("2. Patching settings.json:")
-    patch_settings()
+    print("2. Patching settings:")
+    patch_settings(settings_file, hooks_dst)
     print()
 
-    print("3. Initializing git repository:")
-    git_init()
-    print()
+    if not args.project:
+        print("3. Initializing git repository:")
+        git_init()
+        print()
 
-    print("4. GitHub repository:")
-    gh_create()
-    print()
+        print("4. GitHub repository:")
+        gh_create()
+        print()
 
     print("Done. Restart Claude Code for hooks to take effect.")
 

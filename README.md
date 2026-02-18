@@ -18,6 +18,8 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 
 ## Installation
 
+### Global (all projects)
+
 ```
 python install.py
 ```
@@ -27,6 +29,16 @@ This will:
 2. Add hook configuration to `~/.claude/settings.json`
 3. Initialize a git repository (if needed)
 4. Optionally create a GitHub repository via `gh`
+
+### Project-local (single project, good for testing)
+
+```
+python install.py --project /path/to/your/project
+python install.py --project .
+```
+
+This installs hooks to `<project>/.claude/hooks/` and writes configuration to
+`<project>/.claude/settings.local.json`. Only affects that one project.
 
 ### Manual installation
 
