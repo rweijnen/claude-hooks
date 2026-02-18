@@ -16,20 +16,53 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-FIXUPS_LOG = Path.home() / ".claude" / "hooks" / "fixups.log"
+# Log next to this script (project-local hooks get their own log)
+FIXUPS_LOG = Path(__file__).resolve().parent / "fixups.log"
+MAX_LOG_LINES = 500
+TRIM_TO_LINES = 250
+
+
+def _trim_log_if_needed():
+    """Keep the log file bounded. When it exceeds MAX_LOG_LINES, trim to TRIM_TO_LINES."""
+    try:
+        lines = FIXUPS_LOG.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    if len(lines) > MAX_LOG_LINES:
+        FIXUPS_LOG.write_text(
+            "\n".join(lines[-TRIM_TO_LINES:]) + "\n",
+            encoding="utf-8",
+        )
+
+
+def _log_entry(entry_type, fix_type, original, proposed=None, fixes=None):
+    """Append a structured log entry."""
+    FIXUPS_LOG.parent.mkdir(parents=True, exist_ok=True)
+    now = datetime.now()
+    entry = {
+        "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "type": entry_type,
+        "fix": fix_type,
+        "cwd": os.getcwd(),
+        "original": original,
+    }
+    if proposed is not None:
+        entry["proposed"] = proposed
+    if fixes is not None:
+        entry["fixes"] = fixes
+    with open(FIXUPS_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+    _trim_log_if_needed()
 
 
 def log_fixup(original, proposed, fix_type):
-    """Append a tier-2 suggestion to the fixups log."""
-    FIXUPS_LOG.parent.mkdir(parents=True, exist_ok=True)
-    entry = json.dumps({
-        "timestamp": datetime.now().isoformat(),
-        "fix_type": fix_type,
-        "original": original,
-        "proposed": proposed,
-    })
-    with open(FIXUPS_LOG, "a", encoding="utf-8") as f:
-        f.write(entry + "\n")
+    """Log a tier-2 suggestion (blocked, not auto-fixed)."""
+    _log_entry("suggest", fix_type, original, proposed=proposed)
+
+
+def log_autofix(original, fixed, fixes):
+    """Log a tier-1 auto-fix (silently applied)."""
+    _log_entry("autofix", ",".join(fixes), original, proposed=fixed, fixes=fixes)
 
 
 def block(message):
@@ -251,6 +284,7 @@ def main():
 
     # -- Emit result --------------------------------------------------------
     if fixes:
+        log_autofix(original, command, fixes)
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",

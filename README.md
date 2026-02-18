@@ -63,13 +63,27 @@ Copy `hooks/*.py` to `~/.claude/hooks/` and add to `~/.claude/settings.json`:
 
 ## Reviewing the fixups log
 
-Tier 2 suggestions (doubled flags, backslash paths) are logged to `~/.claude/hooks/fixups.log`:
+Both auto-fixes and tier-2 suggestions are logged. The log lives next to the hook script, so each install gets its own:
+
+- **Global install**: `~/.claude/hooks/fixups.log`
+- **Project install**: `<project>/.claude/hooks/fixups.log`
 
 ```
 cat ~/.claude/hooks/fixups.log
 ```
 
-Each line is a JSON object with `timestamp`, `fix_type`, `original`, and `proposed`.
+Each line is a JSON object with:
+
+| Field | Description |
+|-------|-------------|
+| `time` | Human-readable timestamp (`2026-02-18 13:15:51`) |
+| `type` | `autofix` (tier 1, silently applied) or `suggest` (tier 2, blocked) |
+| `fix` | What was fixed or suggested |
+| `cwd` | Working directory (identifies the project) |
+| `original` | The original command |
+| `proposed` | The fixed/suggested command |
+
+The log auto-trims to 250 lines when it exceeds 500, so it won't grow unbounded.
 
 ## Customization
 
