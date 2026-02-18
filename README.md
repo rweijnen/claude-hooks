@@ -9,6 +9,7 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 | Null redirect | `> nul`, `2> nul` | Auto-fix | Rewrite to `> /dev/null` |
 | Python3 alias | `python3 ...` | Auto-fix | Rewrite to `python` |
 | PowerShell quoting | `pwsh -Command "$..."` | Auto-fix | Swap to single quotes |
+| Reserved names | `> con`, `> prn`, `touch aux.txt` | Block | Reject -- undeletable files |
 | Commit messages | Co-Authored-By, emoji, "Generated with" | Block | Reject with message |
 | Doubled flags | `tasklist //fi` | Block | Suggest single `/` |
 | Backslash paths | `C:\Users\...` | Block | Suggest `C:/Users/...` |

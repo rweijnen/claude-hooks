@@ -72,6 +72,27 @@ def block(message):
 
 
 # ---------------------------------------------------------------------------
+# Windows reserved device names (creating these as files is destructive)
+# https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
+# ---------------------------------------------------------------------------
+
+WINDOWS_RESERVED_NAMES = {
+    "con", "prn", "aux", "nul",
+    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+}
+
+# Pattern matching reserved names as redirect targets or file arguments.
+# Matches: > con, 2> prn, &> aux, also con.txt (with extension).
+_RESERVED_RE = re.compile(
+    r"(?<!/dev/)((?:&|[012])?>)\s*("
+    + "|".join(WINDOWS_RESERVED_NAMES)
+    + r")(?:\.[\w.]+)?\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+# ---------------------------------------------------------------------------
 # Emoji detection (shared by Fix C and standalone)
 # ---------------------------------------------------------------------------
 
@@ -162,6 +183,41 @@ def check_backslash_paths(cmd):
         block(f"Windows backslash paths don't work reliably in Git Bash.\n"
               f"Original:  {cmd}\n"
               f"Suggested: {proposed}")
+
+
+def check_reserved_names(cmd):
+    """Block redirects to Windows reserved device names (other than NUL).
+
+    NUL is handled by the tier-1 auto-fix (rewritten to /dev/null).
+    Other reserved names (CON, PRN, AUX, COM1-9, LPT1-9) would create
+    undeletable files in Git Bash or redirect to hardware devices.
+    Also catches reserved names used as file arguments (touch con, etc.).
+    """
+    # Check redirects: > con, 2> prn, &> aux, > lpt1.txt, etc.
+    m = _RESERVED_RE.search(cmd)
+    if m:
+        name = m.group(2).lower()
+        if name != "nul":  # nul is auto-fixed in tier 1
+            log_fixup(cmd, None, "reserved_name_redirect")
+            block(f"'{m.group(2)}' is a Windows reserved device name. "
+                  f"Redirecting to it will either send output to a hardware "
+                  f"device or create an undeletable file.\n"
+                  f"Use > /dev/null to discard output.")
+
+    # Check file arguments: touch con, mkdir prn, etc.
+    # Look for reserved names as bare arguments after file-creating commands
+    file_cmds = r"\b(?:touch|mkdir|cp|mv|cat\s*>|tee)\s+"
+    fm = re.search(file_cmds + r"(\S+)", cmd)
+    if fm:
+        filename = fm.group(1).strip("\"'")
+        basename = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        # Strip extension: con.txt -> con
+        stem = basename.split(".", 1)[0].lower()
+        if stem in WINDOWS_RESERVED_NAMES:
+            log_fixup(cmd, None, "reserved_name_file")
+            block(f"'{basename}' uses Windows reserved name '{stem}'. "
+                  f"This will create an undeletable file on Windows. "
+                  f"Choose a different filename.")
 
 
 def check_cmd_workaround(cmd):
@@ -261,6 +317,7 @@ def main():
     check_git_commit(command)
     check_cmd_workaround(command)
     check_powershell_file_for_oneliner(command)
+    check_reserved_names(command)
     check_doubled_flags(command)
     check_backslash_paths(command)
 
