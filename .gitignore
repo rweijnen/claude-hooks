@@ -1,0 +1,7 @@
+windows-bash-command-guide.md
+nul-file.md
+__pycache__/
+*.pyc
+*.log
+CLAUDE.md
+.claude/
