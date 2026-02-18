@@ -14,7 +14,6 @@ affect that project -- useful for testing hooks in a sandbox.
 import argparse
 import json
 import shutil
-import subprocess
 import sys
 from pathlib import Path
 
@@ -87,38 +86,6 @@ def patch_settings(settings_file, hooks_dst):
     print(f"  Updated {settings_file}")
 
 
-def git_init():
-    """Initialize git repository if not already present."""
-    if (REPO_DIR / ".git").exists():
-        print("  Git repository already exists")
-        return
-    subprocess.run(["git", "init"], cwd=str(REPO_DIR), check=True)
-    print("  Initialized git repository")
-
-
-def gh_create():
-    """Create GitHub repository using gh CLI."""
-    answer = input("Create GitHub repo? (public/private/skip) [skip]: ").strip().lower()
-    if answer in ("", "skip"):
-        print("  Skipped GitHub repo creation")
-        return
-    if answer not in ("public", "private"):
-        print(f"  Unknown option '{answer}', skipping", file=sys.stderr)
-        return
-    try:
-        subprocess.run(
-            ["gh", "repo", "create", "rweijnen/claude-hooks",
-             f"--{answer}", "--source=.", "--push"],
-            cwd=str(REPO_DIR),
-            check=True,
-        )
-    except FileNotFoundError:
-        print("  gh CLI not found. Install from https://cli.github.com/", file=sys.stderr)
-    except subprocess.CalledProcessError as e:
-        print(f"  gh repo create failed (exit {e.returncode}). "
-              "Create the repo manually.", file=sys.stderr)
-
-
 def main():
     parser = argparse.ArgumentParser(description="Install Claude Code hooks")
     parser.add_argument(
@@ -141,16 +108,7 @@ def main():
     patch_settings(settings_file, hooks_dst)
     print()
 
-    if not args.project:
-        print("3. Initializing git repository:")
-        git_init()
-        print()
-
-        print("4. GitHub repository:")
-        gh_create()
-        print()
-
-    print("Done. Restart Claude Code for hooks to take effect.")
+    print("Done. Hooks will take effect on the next tool call.")
 
 
 if __name__ == "__main__":
