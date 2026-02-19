@@ -260,6 +260,20 @@ def fix_nul_redirect(cmd):
     )
 
 
+def fix_msys2_drive_paths(cmd):
+    """Fix G: /c/Work/... -> C:/Work/...
+
+    MSYS2 drive mount paths (/c/, /d/, etc.) sometimes fail to convert
+    when passed to Windows executables like python.exe. Using C:/ style
+    is always safe for both MSYS2 tools and Windows executables.
+    """
+    return re.sub(
+        r"(?:^|(?<=\s))/([a-zA-Z])/",
+        lambda m: m.group(1).upper() + ":/",
+        cmd,
+    )
+
+
 def fix_python3(cmd):
     """Fix B: python3 -> python (Windows Store alias, not real Python)."""
     return re.sub(r"\bpython3\b", "python", cmd)
@@ -326,6 +340,11 @@ def main():
     command = fix_nul_redirect(command)
     if command != original:
         fixes.append("replaced > nul with > /dev/null")
+
+    prev = command
+    command = fix_msys2_drive_paths(command)
+    if command != prev:
+        fixes.append("converted MSYS2 drive paths to Windows style")
 
     prev = command
     command = fix_python3(command)
