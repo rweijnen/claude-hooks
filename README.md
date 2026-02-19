@@ -1,6 +1,6 @@
 # claude-hooks
 
-PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands and file writes before execution, automatically fixing common Git Bash/MSYS2 mistakes and enforcing code style preferences. No more `> nul` creating undeletable files, no more `python3` hitting the Windows Store alias, no more emoji in code.
+PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands and file writes before execution, automatically fixing common Git Bash/MSYS2 mistakes and enforcing code style preferences. No more `> nul` creating undeletable files, no more `python3` hitting the Windows Store alias, no more `dir /b` silently treating a flag as a path, no more emoji in code.
 
 ## Fixes
 
@@ -16,7 +16,7 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 | Backslash paths | `C:\Users\...` | Block | Suggest `C:/Users/...` |
 | UNC paths | `\\server\share\...` | Block | Suggest `//server/share/...` |
 | cmd /c workaround | `cmd /c "..."` | Block | Reject with message |
-| Legacy PowerShell | `powershell.exe ...` | Block | Suggest `pwsh`; full path allowed for PS 5.1 |
+| Legacy PowerShell | `powershell.exe ...` | Block | Suggest `pwsh`; use full path to opt in to PS 5.1 |
 | `dir /b` in bash | `dir /b path` | Auto-fix | Rewrite to `ls -1 path` |
 | `dir /flag` in pwsh | `pwsh -Command "dir /b ..."` | Block | Suggest `Get-ChildItem` equivalent |
 | Emoji in files | Write/Edit with emoji | Block | Reject with message |
@@ -104,6 +104,7 @@ The hooks are plain Python scripts in `~/.claude/hooks/`. Edit them to:
 
 - Add new auto-fix patterns (add a function, call it in `main()`)
 - Promote a tier-2 suggestion to auto-fix (move the check from blocking to rewriting)
+- Extend `_DIR_FLAG_MAP` in `fix_bash_command.py` to recognise additional `dir` flags
 - Adjust unicode blocking ranges in `check_file_content.py`
 - Add exceptions for specific commands or patterns
 
