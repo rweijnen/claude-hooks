@@ -12,12 +12,20 @@ Tier 2 (suggest):  blocks with exit 2 and a message showing the proposed fix.
 import json
 import os
 import re
+import subprocess
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 
+_SCRIPT_DIR = Path(__file__).resolve().parent
+
 # Log next to this script (project-local hooks get their own log)
-FIXUPS_LOG = Path(__file__).resolve().parent / "fixups.log"
+FIXUPS_LOG = _SCRIPT_DIR / "fixups.log"
+
+# Auto-update: check once per day, background git pull
+_UPDATE_CHECK_FILE = _SCRIPT_DIR / ".last_update_check"
+_UPDATE_INTERVAL = 86400  # seconds (24 hours)
 MAX_LOG_LINES = 500
 TRIM_TO_LINES = 250
 
@@ -296,10 +304,55 @@ def fix_pwsh_quoting(cmd):
 
 
 # ---------------------------------------------------------------------------
+# Auto-update
+# ---------------------------------------------------------------------------
+
+def _maybe_auto_update():
+    """Spawn a background git pull if 24+ hours since last check.
+
+    Only works when the script lives inside a git repo (reference-in-place
+    install). Copy installs skip this silently.
+    """
+    try:
+        if _UPDATE_CHECK_FILE.exists():
+            last = float(_UPDATE_CHECK_FILE.read_text(encoding="utf-8").strip())
+            if time.time() - last < _UPDATE_INTERVAL:
+                return
+    except (OSError, ValueError):
+        pass
+
+    # Find repo root (script is in repo/hooks/)
+    repo_root = _SCRIPT_DIR.parent
+    if not (repo_root / ".git").exists():
+        return  # Copy install, no repo to pull
+
+    # Write timestamp first to prevent concurrent pulls
+    try:
+        _UPDATE_CHECK_FILE.write_text(str(time.time()), encoding="utf-8")
+    except OSError:
+        return
+
+    # Detached background git pull -- does not block the hook
+    try:
+        subprocess.Popen(
+            ["git", "pull", "--quiet"],
+            cwd=str(repo_root),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except OSError:
+        pass  # git not available, skip silently
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main():
+    _maybe_auto_update()
+
     try:
         input_data = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):

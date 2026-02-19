@@ -3,5 +3,6 @@ nul-file.md
 __pycache__/
 *.pyc
 *.log
+.last_update_check
 CLAUDE.md
 .claude/

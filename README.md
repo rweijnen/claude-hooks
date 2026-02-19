@@ -19,17 +19,18 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 
 ## Installation
 
-### Global (all projects)
+### Global (all projects, auto-updating)
 
 ```
+git clone https://github.com/rweijnen/claude-hooks.git
+cd claude-hooks
 python install.py
 ```
 
-This will:
-1. Copy hook scripts to `~/.claude/hooks/`
-2. Add hook configuration to `~/.claude/settings.json`
-3. Initialize a git repository (if needed)
-4. Optionally create a GitHub repository via `gh`
+This points `~/.claude/settings.json` directly at the repo's `hooks/` directory.
+No files are copied -- the hooks run from the cloned repo. Updates are picked up
+automatically: the hook checks once per day and runs a background `git pull` if
+24+ hours have passed.
 
 ### Project-local (single project, good for testing)
 
@@ -38,8 +39,9 @@ python install.py --project /path/to/your/project
 python install.py --project .
 ```
 
-This installs hooks to `<project>/.claude/hooks/` and writes configuration to
+Copies hooks to `<project>/.claude/hooks/` and writes configuration to
 `<project>/.claude/settings.local.json`. Only affects that one project.
+These are snapshots -- re-run the installer to update.
 
 ### Manual installation
 

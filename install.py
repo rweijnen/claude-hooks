@@ -2,13 +2,16 @@
 """Install Claude Code hooks.
 
 Usage:
-    python install.py                 # Global install (~/.claude/)
-    python install.py --project DIR   # Project-local install (DIR/.claude/)
+    python install.py                 # Global install (reference in place)
+    python install.py --project DIR   # Project-local install (copies files)
     python install.py --project .     # Project-local install (current dir)
 
-Global installs go to ~/.claude/settings.json and affect all projects.
-Project-local installs go to DIR/.claude/settings.local.json and only
-affect that project -- useful for testing hooks in a sandbox.
+Global installs point settings.json directly at this repo's hooks/ directory.
+Updates are picked up automatically via background git pull (once per day).
+
+Project-local installs copy hooks to DIR/.claude/hooks/ and write config to
+DIR/.claude/settings.local.json. These are self-contained snapshots -- re-run
+the installer to update.
 """
 
 import argparse
@@ -17,23 +20,14 @@ import shutil
 import sys
 from pathlib import Path
 
-REPO_DIR = Path(__file__).parent
+REPO_DIR = Path(__file__).parent.resolve()
 HOOKS_SRC = REPO_DIR / "hooks"
 
 
-def get_paths(project_dir=None):
-    """Return (hooks_dst, settings_file) for global or project-local install."""
-    if project_dir:
-        base = Path(project_dir).resolve() / ".claude"
-        return base / "hooks", base / "settings.local.json"
-    base = Path.home() / ".claude"
-    return base / "hooks", base / "settings.json"
-
-
-def hooks_config(hooks_dst):
-    """Build the hooks config block with the correct path to hook scripts."""
+def hooks_config(hooks_dir):
+    """Build the hooks config block pointing to the given hooks directory."""
     # Use forward slashes -- these run in Git Bash
-    dst = str(hooks_dst).replace("\\", "/")
+    dst = str(hooks_dir).replace("\\", "/")
     return {
         "PreToolUse": [
             {
@@ -69,7 +63,7 @@ def copy_hooks(hooks_dst):
     return copied
 
 
-def patch_settings(settings_file, hooks_dst):
+def patch_settings(settings_file, hooks_dir):
     """Merge hook configuration into the settings file."""
     settings = {}
     if settings_file.exists():
@@ -77,7 +71,7 @@ def patch_settings(settings_file, hooks_dst):
             settings = json.load(f)
 
     settings.setdefault("hooks", {})
-    settings["hooks"]["PreToolUse"] = hooks_config(hooks_dst)["PreToolUse"]
+    settings["hooks"]["PreToolUse"] = hooks_config(hooks_dir)["PreToolUse"]
 
     settings_file.parent.mkdir(parents=True, exist_ok=True)
     with open(settings_file, "w", encoding="utf-8") as f:
@@ -90,25 +84,39 @@ def main():
     parser = argparse.ArgumentParser(description="Install Claude Code hooks")
     parser.add_argument(
         "--project", metavar="DIR",
-        help="Install to a specific project directory (uses settings.local.json). "
-             "Omit for global install to ~/.claude/",
+        help="Install to a specific project directory (copies hooks, uses "
+             "settings.local.json). Omit for global install.",
     )
     args = parser.parse_args()
 
-    hooks_dst, settings_file = get_paths(args.project)
-    scope = f"project ({Path(args.project).resolve()})" if args.project else "global (~/.claude/)"
+    if args.project:
+        # Project-local: copy hooks, write settings.local.json
+        project = Path(args.project).resolve()
+        hooks_dst = project / ".claude" / "hooks"
+        settings_file = project / ".claude" / "settings.local.json"
 
-    print(f"Installing Claude Code hooks ({scope})...\n")
+        print(f"Installing Claude Code hooks (project: {project})...\n")
 
-    print("1. Copying hook scripts:")
-    count = copy_hooks(hooks_dst)
-    print(f"   {count} hook(s) installed\n")
+        print("1. Copying hook scripts:")
+        count = copy_hooks(hooks_dst)
+        print(f"   {count} hook(s) copied\n")
 
-    print("2. Patching settings:")
-    patch_settings(settings_file, hooks_dst)
+        print("2. Patching settings.local.json:")
+        patch_settings(settings_file, hooks_dst)
+    else:
+        # Global: reference hooks in place, write settings.json
+        settings_file = Path.home() / ".claude" / "settings.json"
+
+        print(f"Installing Claude Code hooks (global, in-place)...\n")
+
+        print(f"1. Using hooks from repo: {HOOKS_SRC}")
+        print(f"   (no copy -- updates via git pull are picked up automatically)\n")
+
+        print("2. Patching settings.json:")
+        patch_settings(settings_file, HOOKS_SRC)
+
     print()
-
-    print("Done. Hooks will take effect on the next tool call.")
+    print("Done. Hooks take effect on the next tool call.")
 
 
 if __name__ == "__main__":
