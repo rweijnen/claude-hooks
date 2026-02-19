@@ -24,12 +24,12 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 ### Global (all projects)
 
 ```
+git clone https://github.com/rweijnen/claude-hooks.git
+cd claude-hooks
 python install.py
 ```
 
-This will:
-1. Copy hook scripts to `~/.claude/hooks/`
-2. Add hook configuration to `~/.claude/settings.json`
+Copies hook scripts to `~/.claude/hooks/` and adds configuration to `~/.claude/settings.json`.
 
 ### Project-local (single project, good for testing)
 
@@ -85,6 +85,16 @@ Each line is a JSON object with:
 | `proposed` | The fixed/suggested command |
 
 The log auto-trims to 250 lines when it exceeds 500, so it won't grow unbounded.
+
+## Updating
+
+Pull the latest changes and re-run the installer:
+
+```
+cd claude-hooks
+git pull
+python install.py
+```
 
 ## Customization
 
