@@ -15,7 +15,7 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 | Doubled flags | `tasklist //fi` | Block | Suggest single `/` |
 | Backslash paths | `C:\Users\...` | Block | Suggest `C:/Users/...` |
 | UNC paths | `\\server\share\...` | Block | Suggest `//server/share/...` |
-| cmd /c workaround | `cmd /c "..."` | Block | Reject with message |
+| cmd /c workaround | `cmd /c "..."` | Block | Reject with message; full path allowed for legacy use |
 | Legacy PowerShell | `powershell.exe ...` | Block | Suggest `pwsh`; use full path to opt in to PS 5.1 |
 | `dir /b` in bash | `dir /b path` | Auto-fix | Rewrite to `ls -1 path` |
 | `dir /flag` in pwsh | `pwsh -Command "dir /b ..."` | Block | Suggest `Get-ChildItem` equivalent |
