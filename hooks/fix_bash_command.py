@@ -185,6 +185,28 @@ def check_backslash_paths(cmd):
               f"Suggested: {proposed}")
 
 
+def check_unc_paths(cmd):
+    r"""Fix H: detect UNC paths with backslashes (\\server\share).
+
+    Backslash UNC paths don't work in Git Bash. Forward-slash UNC
+    paths (//server/share) work in both Git Bash and Python.
+    """
+    for m in re.finditer(r"\\\\([A-Za-z0-9._-]+)\\([^\s'\"]*)", cmd):
+        # Skip if inside single quotes
+        before = cmd[:m.start()]
+        if before.count("'") % 2 == 1:
+            continue
+        proposed = re.sub(
+            r"\\\\([A-Za-z0-9._-]+)\\([^\s'\"]*)",
+            lambda m: "//" + m.group(1) + "/" + m.group(2).replace("\\", "/"),
+            cmd,
+        )
+        log_fixup(cmd, proposed, "unc_path")
+        block(f"UNC paths with backslashes don't work in Git Bash.\n"
+              f"Original:  {cmd}\n"
+              f"Suggested: {proposed}")
+
+
 def check_reserved_names(cmd):
     """Block redirects to Windows reserved device names (other than NUL).
 
@@ -334,6 +356,7 @@ def main():
     check_reserved_names(command)
     check_doubled_flags(command)
     check_backslash_paths(command)
+    check_unc_paths(command)
 
     # -- Tier 1 auto-fixes --------------------------------------------------
 

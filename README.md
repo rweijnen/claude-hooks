@@ -14,6 +14,7 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 | Commit messages | Co-Authored-By, emoji, "Generated with" | Block | Reject with message |
 | Doubled flags | `tasklist //fi` | Block | Suggest single `/` |
 | Backslash paths | `C:\Users\...` | Block | Suggest `C:/Users/...` |
+| UNC paths | `\\server\share\...` | Block | Suggest `//server/share/...` |
 | cmd /c workaround | `cmd /c "..."` | Block | Reject with message |
 | Legacy PowerShell | `powershell.exe ...` | Block | Suggest `pwsh` |
 | Emoji in files | Write/Edit with emoji | Block | Reject with message |
@@ -29,8 +30,6 @@ python install.py
 This will:
 1. Copy hook scripts to `~/.claude/hooks/`
 2. Add hook configuration to `~/.claude/settings.json`
-3. Initialize a git repository (if needed)
-4. Optionally create a GitHub repository via `gh`
 
 ### Project-local (single project, good for testing)
 
