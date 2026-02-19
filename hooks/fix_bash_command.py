@@ -257,16 +257,48 @@ def check_cmd_workaround(cmd):
 
 
 def check_powershell_file_for_oneliner(cmd):
-    """Block powershell.exe -File for simple oneliners.
+    """Block bare powershell.exe; prefer pwsh (PowerShell 7+).
 
-    If the command is just running a short inline snippet via a temp script,
-    use pwsh -Command instead.  Also discourage powershell.exe (use pwsh).
+    Only bare 'powershell' / 'powershell.exe' is blocked. Full-path
+    invocations (C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)
+    are allowed as an intentional escape hatch for PS 5.1 legacy use.
     """
     stripped = cmd.lstrip()
-    # Flag powershell.exe (Windows PowerShell 5.1) -- prefer pwsh (7+)
     if re.match(r"powershell(\.exe)?\s", stripped, re.IGNORECASE):
-        block("Use pwsh (PowerShell 7+) instead of powershell.exe. "
-              "powershell.exe invokes the legacy Windows PowerShell 5.1.")
+        block(
+            "Use pwsh (PowerShell 7+) instead of powershell.exe. "
+            "powershell.exe invokes the legacy Windows PowerShell 5.1.\n"
+            "If you specifically need PowerShell 5.1 for legacy compatibility, "
+            "use the full path: "
+            "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+        )
+
+
+def check_dir_in_pwsh(cmd):
+    """Fix J: block cmd.exe-style 'dir /flag' inside pwsh -Command.
+
+    PowerShell's dir is an alias for Get-ChildItem and does not accept
+    cmd.exe flags. /b is resolved as a path under the current drive root
+    (e.g. C:\\b), producing a confusing 'Cannot find path' error.
+    """
+    if not re.search(r"\bpwsh(?:\.exe)?\s+(?:-Command|-c)\b", cmd, re.IGNORECASE):
+        return
+    dm = re.search(r"\bdir\s+(/[a-zA-Z])", cmd, re.IGNORECASE)
+    if not dm:
+        return
+    flag = dm.group(1).lower()
+    suggestions = {
+        "/b": "Get-ChildItem path | Select-Object -ExpandProperty Name",
+        "/s": "Get-ChildItem path -Recurse",
+        "/a": "Get-ChildItem path -Force",
+    }
+    suggestion = suggestions.get(flag, "Get-ChildItem path")
+    log_fixup(cmd, None, "dir_in_pwsh")
+    block(
+        f"'dir {flag}' is a cmd.exe flag; PowerShell's dir (Get-ChildItem) "
+        f"does not accept it and will treat it as a path.\n"
+        f"Use: {suggestion}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -299,6 +331,60 @@ def fix_msys2_drive_paths(cmd):
 def fix_python3(cmd):
     """Fix B: python3 -> python (Windows Store alias, not real Python)."""
     return re.sub(r"\bpython3\b", "python", cmd)
+
+
+# Mapping of Windows cmd.exe 'dir' flags to GNU 'ls' equivalents
+_DIR_FLAG_MAP = {
+    "b": "-1",   # bare names only, one per line
+    "s": "-R",   # recursive (subdirectories)
+    "a": "-la",  # all files including hidden (dotfiles)
+    "w": "",     # wide format (ls default, no extra flag needed)
+    "n": "-l",   # new long format
+    "q": "-l",   # show owner (ls -l includes owner)
+}
+
+
+def fix_dir_windows_flags(cmd):
+    """Fix I: 'dir /flags [path]' -> 'ls [flags] [path]'.
+
+    In Git Bash, 'dir' is GNU coreutils, not cmd.exe. Windows-style
+    /flags are treated as paths, not switches. Only rewrites when all
+    flags are in the known mapping; unknown flags pass through unchanged.
+    """
+    if not re.match(r"^dir\b", cmd.strip(), re.IGNORECASE):
+        return cmd
+
+    rest = cmd.strip()[3:].strip()  # everything after 'dir'
+
+    # Consume leading /flag tokens (e.g. /b, /s, /a:h)
+    flags = []
+    while True:
+        fm = re.match(r"^(/[a-zA-Z])(?::[a-zA-Z]*)?\s*(.*)", rest, re.DOTALL | re.IGNORECASE)
+        if not fm:
+            break
+        flags.append(fm.group(1).lower())
+        rest = fm.group(2)
+
+    if not flags:
+        return cmd  # no Windows-style flags found
+
+    # Only auto-fix when all flags are known
+    if any(f[1] not in _DIR_FLAG_MAP for f in flags):
+        return cmd
+
+    ls_flags = []
+    for f in flags:
+        mapped = _DIR_FLAG_MAP[f[1]]
+        if mapped and mapped not in ls_flags:
+            ls_flags.append(mapped)
+
+    path_part = rest.strip()
+    ls_cmd = "ls"
+    if ls_flags:
+        ls_cmd += " " + " ".join(ls_flags)
+    if path_part:
+        ls_cmd += " " + path_part
+    return ls_cmd.strip()
 
 
 def fix_pwsh_quoting(cmd):
@@ -353,6 +439,7 @@ def main():
     check_git_commit(command)
     check_cmd_workaround(command)
     check_powershell_file_for_oneliner(command)
+    check_dir_in_pwsh(command)
     check_reserved_names(command)
     check_doubled_flags(command)
     check_backslash_paths(command)
@@ -373,6 +460,11 @@ def main():
     command = fix_python3(command)
     if command != prev:
         fixes.append("replaced python3 with python")
+
+    prev = command
+    command = fix_dir_windows_flags(command)
+    if command != prev:
+        fixes.append("converted Windows dir /flags to ls equivalent")
 
     prev = command
     command, pwsh_err = fix_pwsh_quoting(command)
