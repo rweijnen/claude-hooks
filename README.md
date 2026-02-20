@@ -100,6 +100,45 @@ git pull
 python install.py
 ```
 
+## Configuration
+
+Individual checks can be enabled or disabled via `config.json` in the hooks directory (`~/.claude/hooks/config.json` for global installs, `<project>/.claude/hooks/config.json` for project installs).
+
+To get started, copy the sample config:
+
+```
+cp ~/.claude/hooks/config.sample.json ~/.claude/hooks/config.json
+```
+
+Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true` (enabled) or `false` (disabled). Missing keys use built-in defaults. If there is no `config.json`, all safety checks run and style checks are skipped (same as always).
+
+### Check reference
+
+| Check ID | Description | Default | Tier |
+|----------|-------------|---------|------|
+| `nul_redirect` | Rewrite `> nul` to `> /dev/null` | on | auto-fix |
+| `msys2_drive_paths` | Rewrite `/c/...` to `C:/...` | on | auto-fix |
+| `python3` | Rewrite `python3` to `python` | on | auto-fix |
+| `dir_windows_flags` | Rewrite `dir /b` to `ls -1` | on | auto-fix |
+| `pwsh_quoting` | Fix pwsh double-quote to single-quote | on | auto-fix |
+| `backslash_paths` | Block `C:\` backslash paths | on | block |
+| `unc_paths` | Block `\\server` UNC paths | on | block |
+| `wsl_paths` | Block `/mnt/c/` WSL-style paths | on | block |
+| `reserved_names` | Block redirects to CON, PRN, etc. | on | block |
+| `doubled_flags` | Block `//flag` doubled-slash flags | on | block |
+| `dir_in_pwsh` | Block `dir /flag` inside pwsh | on | block |
+| `cmd_workaround` | Block bare `cmd /c` workarounds | on | block |
+| `powershell_legacy` | Block `powershell.exe`, suggest pwsh | on | block |
+| `wsl_invocation` | Block bare `wsl` commands | on | block |
+| `git_commit_attribution` | Block Co-Authored-By in commits | off | block |
+| `git_commit_generated` | Block "Generated with" in commits | off | block |
+| `git_commit_emoji` | Block emoji in commit messages | off | block |
+| `file_content_unicode` | Block emoji/unicode in file writes | off | block |
+
+Safety checks (default on) prevent real mistakes that break commands or create undeletable files. Style checks (default off) enforce preferences -- enable the ones you want.
+
+See `config.sample.json` for descriptions of each check.
+
 ## Customization
 
 The hooks are plain Python scripts in `~/.claude/hooks/`. Edit them to:

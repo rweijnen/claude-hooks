@@ -9,6 +9,46 @@ in code or documentation.
 import json
 import re
 import sys
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+_HOOK_DIR = Path(__file__).resolve().parent
+_config_cache = None
+
+
+def _load_config():
+    """Load config.json from the same directory as the hook script."""
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
+
+    config_path = _HOOK_DIR / "config.json"
+    _config_cache = {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            _config_cache = {
+                k: v for k, v in raw.items()
+                if not k.startswith("_") and isinstance(v, bool)
+            }
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return _config_cache
+
+
+def _is_enabled(check_id, default=None):
+    """Check whether a given check is enabled."""
+    config = _load_config()
+    if check_id in config:
+        return config[check_id]
+    if default is not None:
+        return default
+    return False  # file_content_unicode defaults to off
+
 
 # Unicode ranges to block
 BLOCKED_RANGES = [
@@ -48,6 +88,9 @@ def main():
         sys.exit(0)
 
     if not content:
+        sys.exit(0)
+
+    if not _is_enabled("file_content_unicode", default=False):
         sys.exit(0)
 
     result = find_blocked_char(content)

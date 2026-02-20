@@ -17,7 +17,78 @@ from datetime import datetime
 from pathlib import Path
 
 # Log next to this script (project-local hooks get their own log)
-FIXUPS_LOG = Path(__file__).resolve().parent / "fixups.log"
+_HOOK_DIR = Path(__file__).resolve().parent
+FIXUPS_LOG = _HOOK_DIR / "fixups.log"
+
+
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+# Built-in defaults: safety checks ON, style checks OFF
+_DEFAULTS = {
+    "nul_redirect": True,
+    "msys2_drive_paths": True,
+    "backslash_paths": True,
+    "unc_paths": True,
+    "wsl_paths": True,
+    "reserved_names": True,
+    "python3": True,
+    "dir_windows_flags": True,
+    "doubled_flags": True,
+    "dir_in_pwsh": True,
+    "pwsh_quoting": True,
+    "cmd_workaround": True,
+    "powershell_legacy": True,
+    "wsl_invocation": True,
+    "git_commit_attribution": False,
+    "git_commit_generated": False,
+    "git_commit_emoji": False,
+}
+
+_config_cache = None
+
+
+def _load_config():
+    """Load config.json from the same directory as the hook script.
+
+    Returns a dict of check_id -> bool. Missing file or invalid JSON
+    falls back to an empty dict (all checks use built-in defaults).
+    Keys starting with '_' (comment keys) are ignored.
+    """
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
+
+    config_path = _HOOK_DIR / "config.json"
+    _config_cache = {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+        if isinstance(raw, dict):
+            _config_cache = {
+                k: v for k, v in raw.items()
+                if not k.startswith("_") and isinstance(v, bool)
+            }
+    except (OSError, json.JSONDecodeError, ValueError):
+        pass
+    return _config_cache
+
+
+def _is_enabled(check_id, default=None):
+    """Check whether a given check is enabled.
+
+    Looks up check_id in config.json first, then falls back to built-in
+    defaults. If the check_id is unknown, uses the provided default
+    (or True if not specified).
+    """
+    config = _load_config()
+    if check_id in config:
+        return config[check_id]
+    if default is not None:
+        return default
+    return _DEFAULTS.get(check_id, True)
+
 MAX_LOG_LINES = 500
 TRIM_TO_LINES = 250
 
@@ -130,17 +201,28 @@ EMOJI_RE = re.compile(
 # Tier 2 -- blocking checks (run first so bad commands never execute)
 # ---------------------------------------------------------------------------
 
-def check_git_commit(cmd):
-    """Fix C: block git commit messages with AI attribution or emoji."""
+def check_git_commit_attribution(cmd):
+    """Block git commit messages with Co-Authored-By."""
     if not re.search(r"\bgit\s+commit\b", cmd):
         return
-    # Scan the whole command (covers -m "...", heredoc, etc.)
     if re.search(r"co-authored-by", cmd, re.IGNORECASE):
         block("Commit message contains Co-Authored-By. "
               "Remove AI attribution from commit messages.")
+
+
+def check_git_commit_generated(cmd):
+    """Block git commit messages with 'Generated with'."""
+    if not re.search(r"\bgit\s+commit\b", cmd):
+        return
     if re.search(r"generated with", cmd, re.IGNORECASE):
         block("Commit message contains 'Generated with'. "
               "Remove AI attribution from commit messages.")
+
+
+def check_git_commit_emoji(cmd):
+    """Block git commit messages containing emoji."""
+    if not re.search(r"\bgit\s+commit\b", cmd):
+        return
     if EMOJI_RE.search(cmd):
         block("Commit message contains emoji. "
               "Use plain text in commit messages.")
@@ -501,44 +583,63 @@ def main():
     fixes = []
 
     # -- Tier 2 checks (blocking) ------------------------------------------
-    check_git_commit(command)
-    check_cmd_workaround(command)
-    check_powershell_file_for_oneliner(command)
-    check_wsl_invocation(command)
-    check_wsl_paths(command)
-    check_dir_in_pwsh(command)
-    check_reserved_names(command)
-    check_doubled_flags(command)
-    check_backslash_paths(command)
-    check_unc_paths(command)
+    if _is_enabled("git_commit_attribution", default=False):
+        check_git_commit_attribution(command)
+    if _is_enabled("git_commit_generated", default=False):
+        check_git_commit_generated(command)
+    if _is_enabled("git_commit_emoji", default=False):
+        check_git_commit_emoji(command)
+    if _is_enabled("cmd_workaround"):
+        check_cmd_workaround(command)
+    if _is_enabled("powershell_legacy"):
+        check_powershell_file_for_oneliner(command)
+    if _is_enabled("wsl_invocation"):
+        check_wsl_invocation(command)
+    if _is_enabled("wsl_paths"):
+        check_wsl_paths(command)
+    if _is_enabled("dir_in_pwsh"):
+        check_dir_in_pwsh(command)
+    if _is_enabled("reserved_names"):
+        check_reserved_names(command)
+    if _is_enabled("doubled_flags"):
+        check_doubled_flags(command)
+    if _is_enabled("backslash_paths"):
+        check_backslash_paths(command)
+    if _is_enabled("unc_paths"):
+        check_unc_paths(command)
 
     # -- Tier 1 auto-fixes --------------------------------------------------
 
-    command = fix_nul_redirect(command)
-    if command != original:
-        fixes.append("replaced > nul with > /dev/null")
+    if _is_enabled("nul_redirect"):
+        command = fix_nul_redirect(command)
+        if command != original:
+            fixes.append("replaced > nul with > /dev/null")
 
-    prev = command
-    command = fix_msys2_drive_paths(command)
-    if command != prev:
-        fixes.append("converted MSYS2 drive paths to Windows style")
+    if _is_enabled("msys2_drive_paths"):
+        prev = command
+        command = fix_msys2_drive_paths(command)
+        if command != prev:
+            fixes.append("converted MSYS2 drive paths to Windows style")
 
-    prev = command
-    command = fix_python3(command)
-    if command != prev:
-        fixes.append("replaced python3 with python")
+    if _is_enabled("python3"):
+        prev = command
+        command = fix_python3(command)
+        if command != prev:
+            fixes.append("replaced python3 with python")
 
-    prev = command
-    command = fix_dir_windows_flags(command)
-    if command != prev:
-        fixes.append("converted Windows dir /flags to ls equivalent")
+    if _is_enabled("dir_windows_flags"):
+        prev = command
+        command = fix_dir_windows_flags(command)
+        if command != prev:
+            fixes.append("converted Windows dir /flags to ls equivalent")
 
-    prev = command
-    command, pwsh_err = fix_pwsh_quoting(command)
-    if pwsh_err:
-        block(pwsh_err)
-    if command != prev:
-        fixes.append("swapped pwsh -Command quotes from double to single")
+    if _is_enabled("pwsh_quoting"):
+        prev = command
+        command, pwsh_err = fix_pwsh_quoting(command)
+        if pwsh_err:
+            block(pwsh_err)
+        if command != prev:
+            fixes.append("swapped pwsh -Command quotes from double to single")
 
     # -- Emit result --------------------------------------------------------
     if fixes:
