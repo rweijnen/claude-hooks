@@ -55,7 +55,7 @@ def hooks_config(hooks_dst):
 
 
 def copy_hooks(hooks_dst):
-    """Copy all .py hook scripts to the target directory."""
+    """Copy all .py hook scripts and config.sample.json to the target directory."""
     hooks_dst.mkdir(parents=True, exist_ok=True)
     copied = 0
     for src in sorted(HOOKS_SRC.glob("*.py")):
@@ -66,6 +66,20 @@ def copy_hooks(hooks_dst):
     if copied == 0:
         print("  No hook scripts found in hooks/ directory.", file=sys.stderr)
         sys.exit(1)
+
+    # Copy config.sample.json (always overwrite -- it's the reference copy)
+    sample_src = HOOKS_SRC / "config.sample.json"
+    if sample_src.exists():
+        sample_dst = hooks_dst / "config.sample.json"
+        shutil.copy2(sample_src, sample_dst)
+        print(f"  {sample_src.name} -> {sample_dst}")
+
+    # Do NOT overwrite existing config.json (preserve user choices)
+    config_dst = hooks_dst / "config.json"
+    if not config_dst.exists():
+        print(f"  No config.json found -- using built-in defaults")
+        print(f"  Copy config.sample.json to config.json to customize checks")
+
     return copied
 
 

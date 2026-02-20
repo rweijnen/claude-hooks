@@ -1,0 +1,55 @@
+{
+  "_comment_nul_redirect": "Auto-fix: > nul -> > /dev/null (nul creates undeletable files on Windows)",
+  "nul_redirect": true,
+
+  "_comment_msys2_drive_paths": "Auto-fix: /c/Users/... -> C:/Users/... (MSYS2 paths fail with Windows tools)",
+  "msys2_drive_paths": true,
+
+  "_comment_backslash_paths": "Block: C:\\Users\\... -> suggest C:/Users/... (backslashes break in bash)",
+  "backslash_paths": true,
+
+  "_comment_unc_paths": "Block: \\\\server\\share -> suggest //server/share",
+  "unc_paths": true,
+
+  "_comment_wsl_paths": "Block: /mnt/c/Users/... -> suggest C:/Users/... (WSL paths, not Git Bash)",
+  "wsl_paths": true,
+
+  "_comment_reserved_names": "Block: > con, touch prn.txt (Windows reserved device names)",
+  "reserved_names": true,
+
+  "_comment_python3": "Auto-fix: python3 -> python (python3 is a Windows Store alias)",
+  "python3": true,
+
+  "_comment_dir_windows_flags": "Auto-fix: dir /b -> ls -1, dir /s -> ls -R (dir in Git Bash is GNU coreutils)",
+  "dir_windows_flags": true,
+
+  "_comment_doubled_flags": "Block: tasklist //fi -> suggest tasklist /fi (doubled // breaks Windows commands)",
+  "doubled_flags": true,
+
+  "_comment_dir_in_pwsh": "Block: pwsh -Command 'dir /b' -> suggest Get-ChildItem (PowerShell dir != cmd dir)",
+  "dir_in_pwsh": true,
+
+  "_comment_pwsh_quoting": "Auto-fix: pwsh -Command \"$var\" -> pwsh -Command '$var' (prevent bash $ expansion)",
+  "pwsh_quoting": true,
+
+  "_comment_cmd_workaround": "Block: cmd /c \"...\" -> run directly in bash (full path allowed as escape hatch)",
+  "cmd_workaround": true,
+
+  "_comment_powershell_legacy": "Block: powershell.exe -> suggest pwsh (full path allowed for PS 5.1)",
+  "powershell_legacy": true,
+
+  "_comment_wsl_invocation": "Block: wsl ls -> run ls directly (you're in Git Bash, not WSL)",
+  "wsl_invocation": true,
+
+  "_comment_git_commit_attribution": "Block: git commit with Co-Authored-By lines",
+  "git_commit_attribution": false,
+
+  "_comment_git_commit_generated": "Block: git commit with 'Generated with' text",
+  "git_commit_generated": false,
+
+  "_comment_git_commit_emoji": "Block: git commit messages containing emoji",
+  "git_commit_emoji": false,
+
+  "_comment_file_content_unicode": "Block: Write/Edit with emoji or decorative unicode (box drawing, dingbats)",
+  "file_content_unicode": false
+}
