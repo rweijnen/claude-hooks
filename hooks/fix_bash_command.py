@@ -96,6 +96,21 @@ _RESERVED_RE = re.compile(
 # Emoji detection (shared by Fix C and standalone)
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# WSL environment detection (cached)
+# ---------------------------------------------------------------------------
+
+_in_wsl = "WSL_DISTRO_NAME" in os.environ
+_wsl_installed = None
+
+
+def _is_wsl_installed():
+    global _wsl_installed
+    if _wsl_installed is None:
+        _wsl_installed = Path("C:/Windows/System32/wsl.exe").exists()
+    return _wsl_installed
+
+
 EMOJI_RE = re.compile(
     "["
     "\U0001F600-\U0001F64F"  # emoticons
@@ -205,6 +220,49 @@ def check_unc_paths(cmd):
         block(f"UNC paths with backslashes don't work in Git Bash.\n"
               f"Original:  {cmd}\n"
               f"Suggested: {proposed}")
+
+
+def check_wsl_invocation(cmd):
+    """Block bare 'wsl' commands -- Claude is in Git Bash, not WSL."""
+    if not re.match(r"wsl(\.exe)?\s", cmd.lstrip(), re.IGNORECASE):
+        return
+    # Allow full-path invocations as an intentional escape hatch
+    stripped = cmd.lstrip()
+    if re.match(r"[A-Za-z]:/", stripped):
+        return
+    if _is_wsl_installed():
+        block(
+            "You are running in Git Bash on native Windows, not inside WSL.\n"
+            "Run the command directly instead of prefixing it with wsl.\n"
+            "If you specifically need to run a command inside WSL, "
+            "use the full path: C:/Windows/System32/wsl.exe"
+        )
+    else:
+        block(
+            "WSL is not installed. You are running in Git Bash on native Windows.\n"
+            "Run the command directly instead of prefixing it with wsl."
+        )
+
+
+def check_wsl_paths(cmd):
+    """Block /mnt/c/ style paths -- these are WSL paths, not Git Bash paths."""
+    if _in_wsl:
+        return
+    m = re.search(r"/mnt/([a-zA-Z])/", cmd)
+    if not m:
+        return
+    proposed = re.sub(
+        r"/mnt/([a-zA-Z])/",
+        lambda m: m.group(1).upper() + ":/",
+        cmd,
+    )
+    log_fixup(cmd, proposed, "wsl_path")
+    block(
+        f"/mnt/{m.group(1)}/ is a WSL mount path. "
+        f"You are in Git Bash on native Windows.\n"
+        f"Original:  {cmd}\n"
+        f"Suggested: {proposed}"
+    )
 
 
 def check_reserved_names(cmd):
@@ -446,6 +504,8 @@ def main():
     check_git_commit(command)
     check_cmd_workaround(command)
     check_powershell_file_for_oneliner(command)
+    check_wsl_invocation(command)
+    check_wsl_paths(command)
     check_dir_in_pwsh(command)
     check_reserved_names(command)
     check_doubled_flags(command)
