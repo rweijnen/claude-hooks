@@ -453,11 +453,12 @@ def check_dir_in_pwsh(cmd):
 # ---------------------------------------------------------------------------
 
 def fix_nul_redirect(cmd):
-    """Fix A: > nul -> > /dev/null"""
+    """Fix A: > nul -> > /dev/null (case-insensitive: NUL, Nul, nul)"""
     return re.sub(
         r"(?<!/dev/)((?:&|[012])?>)\s*nul\b",
         r"\1 /dev/null",
         cmd,
+        flags=re.IGNORECASE,
     )
 
 
