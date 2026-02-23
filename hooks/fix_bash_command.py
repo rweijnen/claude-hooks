@@ -261,14 +261,29 @@ def check_doubled_flags(cmd):
               f"Suggested: {proposed}")
 
 
+def _strip_heredocs(cmd):
+    """Remove heredoc bodies from a command string.
+
+    Heredoc content is text payload, not shell-interpreted paths.
+    Stripping it prevents false positives in path checks.
+    """
+    return re.sub(
+        r"<<-?\s*['\"]?(\w+)['\"]?.*?\n(.*?\n)\1",
+        r"",
+        cmd,
+        flags=re.DOTALL,
+    )
+
+
 def check_backslash_paths(cmd):
     r"""Fix F: detect Windows backslash paths in bash context.
 
     Matches patterns like C:\Users, D:\temp outside single-quoted strings.
     """
-    for m in re.finditer(r"([A-Za-z]):\\([A-Za-z])", cmd):
+    stripped = _strip_heredocs(cmd)
+    for m in re.finditer(r"([A-Za-z]):\\([A-Za-z])", stripped):
         # Skip if inside single quotes (count odd quotes before match)
-        before = cmd[:m.start()]
+        before = stripped[:m.start()]
         if before.count("'") % 2 == 1:
             continue
         proposed = re.sub(
@@ -288,9 +303,10 @@ def check_unc_paths(cmd):
     Backslash UNC paths don't work in Git Bash. Forward-slash UNC
     paths (//server/share) work in both Git Bash and Python.
     """
-    for m in re.finditer(r"\\\\([A-Za-z0-9._-]+)\\([^\s'\"]*)", cmd):
+    stripped = _strip_heredocs(cmd)
+    for m in re.finditer(r"\\\\([A-Za-z0-9._-]+)\\([^\s'\"]*)", stripped):
         # Skip if inside single quotes
-        before = cmd[:m.start()]
+        before = stripped[:m.start()]
         if before.count("'") % 2 == 1:
             continue
         proposed = re.sub(
