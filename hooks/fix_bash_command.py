@@ -41,6 +41,7 @@ _DEFAULTS = {
     "cmd_workaround": True,
     "powershell_legacy": True,
     "wsl_invocation": True,
+    "start_command": True,
     "git_commit_attribution": False,
     "git_commit_generated": False,
     "git_commit_emoji": False,
@@ -55,6 +56,7 @@ def _load_config():
     Returns a dict of check_id -> bool. Missing file or invalid JSON
     falls back to an empty dict (all checks use built-in defaults).
     Keys starting with '_' (comment keys) are ignored.
+    Keys are lowercased for case-insensitive matching.
     """
     global _config_cache
     if _config_cache is not None:
@@ -67,7 +69,7 @@ def _load_config():
             raw = json.load(f)
         if isinstance(raw, dict):
             _config_cache = {
-                k: v for k, v in raw.items()
+                k.lower(): v for k, v in raw.items()
                 if not k.startswith("_") and isinstance(v, bool)
             }
     except (OSError, json.JSONDecodeError, ValueError):
@@ -581,6 +583,35 @@ def fix_pwsh_quoting(cmd):
     return fixed, None
 
 
+def fix_start_command(cmd):
+    """Fix K: start "" "path" -> python -c "import os; os.startfile('path')".
+
+    'start' is a cmd.exe built-in. Git Bash has to spawn cmd.exe to run it.
+    os.startfile() calls ShellExecuteW directly -- no extra process.
+    """
+    m = re.match(
+        r'^start\s+""\s+"([^"]+)"$',
+        cmd.strip(),
+    )
+    if not m:
+        # Also match without the empty title: start "path"
+        m = re.match(
+            r'^start\s+"([^"]+)"$',
+            cmd.strip(),
+        )
+    if not m:
+        # Unquoted: start path (no spaces in path)
+        m = re.match(
+            r'^start\s+(\S+)$',
+            cmd.strip(),
+        )
+    if not m:
+        return cmd
+    path = m.group(1).replace("\\", "/")
+    escaped = path.replace("'", "\\'")
+    return f"python -c \"import os; os.startfile('{escaped}')\""
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -657,6 +688,12 @@ def main():
             block(pwsh_err)
         if command != prev:
             fixes.append("swapped pwsh -Command quotes from double to single")
+
+    if _is_enabled("start_command"):
+        prev = command
+        command = fix_start_command(command)
+        if command != prev:
+            fixes.append("replaced start with os.startfile()")
 
     # -- Emit result --------------------------------------------------------
     if fixes:

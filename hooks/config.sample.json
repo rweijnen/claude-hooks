@@ -41,6 +41,9 @@
   "_comment_wsl_invocation": "Block: wsl ls -> run ls directly (you're in Git Bash, not WSL)",
   "wsl_invocation": true,
 
+  "_comment_start_command": "Auto-fix: start \"\" \"file\" -> python os.startfile() (avoids spawning cmd.exe)",
+  "start_command": true,
+
   "_comment_git_commit_attribution": "Block: git commit with Co-Authored-By lines",
   "git_commit_attribution": false,
 
