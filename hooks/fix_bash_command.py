@@ -401,26 +401,29 @@ def check_reserved_names(cmd):
 
 
 def check_cmd_workaround(cmd):
-    """Block bare cmd /c workarounds; allow full-path for legitimate cmd use.
+    """Block bare cmd /c workarounds; allow full-path and .bat/.cmd files.
 
-    Bare 'cmd /c' / 'cmd.exe /c' is blocked. Full-path invocations
-    (C:/Windows/System32/cmd.exe /c) are allowed as an intentional escape
-    hatch for cases that genuinely require a cmd.exe environment (.bat files,
-    Windows built-ins with no bash/pwsh equivalent, legacy tooling).
+    Bare 'cmd /c' / 'cmd.exe /c' is blocked unless:
+    - The argument is a .bat or .cmd file (these genuinely need cmd.exe)
+    - A full path to cmd.exe is used (intentional escape hatch)
     """
     # Use re.search so it catches cmd /c after && or || chaining.
-    # \b before cmd prevents matching full-path escape hatch
-    # (C:/Windows/System32/cmd.exe).
-    if re.search(r"(?:^|&&|\|\||;)\s*cmd(\.exe)?\s+(//c|/c)\b", cmd, re.IGNORECASE):
-        block(
-            "Avoid cmd /c as a workaround. "
-            "Run the command directly in Git Bash instead. "
-            "If a Windows built-in (dir, type, etc.) is needed, "
-            "consider a PowerShell or Python alternative.\n"
-            "If you specifically need a cmd.exe environment (.bat files, "
-            "legacy tooling), use the full path: "
-            "C:/Windows/System32/cmd.exe /c \"...\""
-        )
+    m = re.search(r"(?:^|&&|\|\||;)\s*cmd(\.exe)?\s+(//c|/c)\b\s*(.*)", cmd, re.IGNORECASE)
+    if not m:
+        return
+    # Allow if the argument is a .bat or .cmd file
+    arg = m.group(3).strip().strip('"').strip("'")
+    if re.search(r"\.(bat|cmd)\b", arg, re.IGNORECASE):
+        return
+    block(
+        "Avoid cmd /c as a workaround. "
+        "Run the command directly in Git Bash instead. "
+        "If a Windows built-in (dir, type, etc.) is needed, "
+        "consider a PowerShell or Python alternative.\n"
+        "If you specifically need a cmd.exe environment (.bat files, "
+        "legacy tooling), use the full path: "
+        "C:/Windows/System32/cmd.exe /c \"...\""
+    )
 
 
 def check_powershell_file_for_oneliner(cmd):
