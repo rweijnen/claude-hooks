@@ -244,10 +244,6 @@ def check_doubled_flags(cmd):
     # Skip URLs
     if re.search(r"https?://", cmd):
         return
-    # Exception: cmd //c is a legitimate MSYS2 escape (/c = C: drive letter)
-    # Use re.search so it works after && or || chaining
-    if re.search(r"\bcmd(\.exe)?\s+//c\b", cmd, re.IGNORECASE):
-        return
     for m in re.finditer(r"(?:^|\s)(//([a-zA-Z]{1,4}))(?=\s|$|\")", cmd):
         flag_full = m.group(1)
         flag_name = m.group(2)
