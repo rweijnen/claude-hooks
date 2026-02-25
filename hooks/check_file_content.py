@@ -20,7 +20,10 @@ _config_cache = None
 
 
 def _load_config():
-    """Load config.json from the same directory as the hook script."""
+    """Load config.json from the same directory as the hook script.
+
+    Keys are lowercased for case-insensitive matching.
+    """
     global _config_cache
     if _config_cache is not None:
         return _config_cache
@@ -32,7 +35,7 @@ def _load_config():
             raw = json.load(f)
         if isinstance(raw, dict):
             _config_cache = {
-                k: v for k, v in raw.items()
+                k.lower(): v for k, v in raw.items()
                 if not k.startswith("_") and isinstance(v, bool)
             }
     except (OSError, json.JSONDecodeError, ValueError):
