@@ -245,8 +245,8 @@ def check_doubled_flags(cmd):
     if re.search(r"https?://", cmd):
         return
     # Exception: cmd //c is a legitimate MSYS2 escape (/c = C: drive letter)
-    stripped = cmd.lstrip()
-    if re.match(r"cmd(\.exe)?\s+//c\b", stripped, re.IGNORECASE):
+    # Use re.search so it works after && or || chaining
+    if re.search(r"\bcmd(\.exe)?\s+//c\b", cmd, re.IGNORECASE):
         return
     for m in re.finditer(r"(?:^|\s)(//([a-zA-Z]{1,4}))(?=\s|$|\")", cmd):
         flag_full = m.group(1)
@@ -408,8 +408,10 @@ def check_cmd_workaround(cmd):
     hatch for cases that genuinely require a cmd.exe environment (.bat files,
     Windows built-ins with no bash/pwsh equivalent, legacy tooling).
     """
-    stripped = cmd.lstrip()
-    if re.match(r"cmd(\.exe)?\s+(//c|/c)\b", stripped, re.IGNORECASE):
+    # Use re.search so it catches cmd /c after && or || chaining.
+    # \b before cmd prevents matching full-path escape hatch
+    # (C:/Windows/System32/cmd.exe).
+    if re.search(r"(?:^|&&|\|\||;)\s*cmd(\.exe)?\s+(//c|/c)\b", cmd, re.IGNORECASE):
         block(
             "Avoid cmd /c as a workaround. "
             "Run the command directly in Git Bash instead. "
