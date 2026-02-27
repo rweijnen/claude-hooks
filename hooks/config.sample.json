@@ -32,9 +32,6 @@
   "_comment_pwsh_quoting": "Auto-fix: pwsh -Command \"$var\" -> pwsh -Command '$var' (prevent bash $ expansion)",
   "pwsh_quoting": true,
 
-  "_comment_cmd_workaround": "Block: cmd /c \"...\" -> run directly in bash (full path allowed as escape hatch)",
-  "cmd_workaround": true,
-
   "_comment_powershell_legacy": "Block: powershell.exe -> suggest pwsh (full path allowed for PS 5.1)",
   "powershell_legacy": true,
 

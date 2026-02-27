@@ -38,7 +38,6 @@ _DEFAULTS = {
     "doubled_flags": True,
     "dir_in_pwsh": True,
     "pwsh_quoting": True,
-    "cmd_workaround": True,
     "powershell_legacy": True,
     "wsl_invocation": True,
     "start_command": True,
@@ -166,10 +165,6 @@ _RESERVED_RE = re.compile(
 
 
 # ---------------------------------------------------------------------------
-# Emoji detection (shared by Fix C and standalone)
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
 # WSL environment detection (cached)
 # ---------------------------------------------------------------------------
 
@@ -276,16 +271,18 @@ def _strip_heredocs(cmd):
 def check_backslash_paths(cmd):
     r"""Fix F: detect Windows backslash paths in bash context.
 
-    Matches patterns like C:\Users, D:\temp outside single-quoted strings.
+    Matches drive-letter patterns like C:\Users, D:\temp outside single-quoted
+    strings.  The drive letter must be at a word boundary (not mid-word like
+    HKCU\Software) to avoid false positives on registry paths.
     """
     stripped = _strip_heredocs(cmd)
-    for m in re.finditer(r"([A-Za-z]):\\([A-Za-z])", stripped):
+    for m in re.finditer(r"(?<![A-Za-z])([A-Za-z]):\\([A-Za-z])", stripped):
         # Skip if inside single quotes (count odd quotes before match)
         before = stripped[:m.start()]
         if before.count("'") % 2 == 1:
             continue
         proposed = re.sub(
-            r"[A-Za-z]:\\[^\s'\"]*",
+            r"(?<![A-Za-z])[A-Za-z]:\\[^\s'\"]*",
             lambda m: m.group(0).replace("\\", "/"),
             cmd,
         )
@@ -300,15 +297,17 @@ def check_unc_paths(cmd):
 
     Backslash UNC paths don't work in Git Bash. Forward-slash UNC
     paths (//server/share) work in both Git Bash and Python.
+    The \\\\ must be at a word boundary to avoid false positives on
+    escaped backslashes mid-word (e.g. HKCU\\Software in registry paths).
     """
     stripped = _strip_heredocs(cmd)
-    for m in re.finditer(r"\\\\([A-Za-z0-9._-]+)\\([^\s'\"]*)", stripped):
+    for m in re.finditer(r"(?:^|(?<=[\s\"'=]))\\\\([A-Za-z0-9._-]+)\\([^\s'\"]*)", stripped):
         # Skip if inside single quotes
         before = stripped[:m.start()]
         if before.count("'") % 2 == 1:
             continue
         proposed = re.sub(
-            r"\\\\([A-Za-z0-9._-]+)\\([^\s'\"]*)",
+            r"(?:^|(?<=[\s\"'=]))\\\\([A-Za-z0-9._-]+)\\([^\s'\"]*)",
             lambda m: "//" + m.group(1) + "/" + m.group(2).replace("\\", "/"),
             cmd,
         )
@@ -344,7 +343,8 @@ def check_wsl_paths(cmd):
     """Block /mnt/c/ style paths -- these are WSL paths, not Git Bash paths."""
     if _in_wsl:
         return
-    m = re.search(r"/mnt/([a-zA-Z])/", cmd)
+    stripped = _strip_heredocs(cmd)
+    m = re.search(r"/mnt/([a-zA-Z])/", stripped)
     if not m:
         return
     proposed = re.sub(
@@ -396,33 +396,7 @@ def check_reserved_names(cmd):
                   f"Choose a different filename.")
 
 
-def check_cmd_workaround(cmd):
-    """Block bare cmd /c workarounds; allow full-path and .bat/.cmd files.
-
-    Bare 'cmd /c' / 'cmd.exe /c' is blocked unless:
-    - The argument is a .bat or .cmd file (these genuinely need cmd.exe)
-    - A full path to cmd.exe is used (intentional escape hatch)
-    """
-    # Use re.search so it catches cmd /c after && or || chaining.
-    m = re.search(r"(?:^|&&|\|\||;)\s*cmd(\.exe)?\s+(//c|/c)\b\s*(.*)", cmd, re.IGNORECASE)
-    if not m:
-        return
-    # Allow if the argument is a .bat or .cmd file
-    arg = m.group(3).strip().strip('"').strip("'")
-    if re.search(r"\.(bat|cmd)\b", arg, re.IGNORECASE):
-        return
-    block(
-        "Avoid cmd /c as a workaround. "
-        "Run the command directly in Git Bash instead. "
-        "If a Windows built-in (dir, type, etc.) is needed, "
-        "consider a PowerShell or Python alternative.\n"
-        "If you specifically need a cmd.exe environment (.bat files, "
-        "legacy tooling), use the full path: "
-        "C:/Windows/System32/cmd.exe /c \"...\""
-    )
-
-
-def check_powershell_file_for_oneliner(cmd):
+def check_powershell_legacy(cmd):
     """Block bare powershell.exe; prefer pwsh (PowerShell 7+).
 
     Only bare 'powershell' / 'powershell.exe' is blocked. Full-path
@@ -638,10 +612,8 @@ def main():
         check_git_commit_generated(command)
     if _is_enabled("git_commit_emoji", default=False):
         check_git_commit_emoji(command)
-    if _is_enabled("cmd_workaround"):
-        check_cmd_workaround(command)
     if _is_enabled("powershell_legacy"):
-        check_powershell_file_for_oneliner(command)
+        check_powershell_legacy(command)
     if _is_enabled("wsl_invocation"):
         check_wsl_invocation(command)
     if _is_enabled("wsl_paths"):

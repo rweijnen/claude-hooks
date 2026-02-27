@@ -15,7 +15,6 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 | Doubled flags | `tasklist //fi` | Block | Suggest single `/` |
 | Backslash paths | `C:\Users\...` | Block | Suggest `C:/Users/...` |
 | UNC paths | `\\server\share\...` | Block | Suggest `//server/share/...` |
-| cmd /c workaround | `cmd /c "..."` | Block | Reject with message; full path allowed for legacy use |
 | WSL invocation | `wsl ls`, `wsl.exe cat` | Block | Reject -- you're in Git Bash, not WSL; full path allowed |
 | WSL mount paths | `/mnt/c/Users/...` | Block | Suggest `C:/Users/...` |
 | Legacy PowerShell | `powershell.exe ...` | Block | Suggest `pwsh`; use full path to opt in to PS 5.1 |
@@ -129,7 +128,6 @@ Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true
 | `reserved_names` | Block redirects to CON, PRN, etc. | on | block |
 | `doubled_flags` | Block `//flag` doubled-slash flags | on | block |
 | `dir_in_pwsh` | Block `dir /flag` inside pwsh | on | block |
-| `cmd_workaround` | Block bare `cmd /c` workarounds | on | block |
 | `powershell_legacy` | Block `powershell.exe`, suggest pwsh | on | block |
 | `wsl_invocation` | Block bare `wsl` commands | on | block |
 | `git_commit_attribution` | Block Co-Authored-By in commits | off | block |
