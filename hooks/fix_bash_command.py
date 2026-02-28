@@ -239,10 +239,12 @@ def check_doubled_flags(cmd):
     # Skip URLs
     if re.search(r"https?://", cmd):
         return
-    # Collect all doubled-flag positions, then fix them all at once
+    flag_re = re.compile(r"(?:^|\s)(//([a-zA-Z]{1,4}))(?=\s|$|\")")
+    # Collect flags outside heredocs and UNC paths
     fixes = []
-    for m in re.finditer(r"(?:^|\s)(//([a-zA-Z]{1,4}))(?=\s|$|\")", cmd):
-        # Skip if it looks like a UNC path (//server/share)
+    for m in flag_re.finditer(cmd):
+        if _in_heredoc(cmd, m.start(1)):
+            continue
         after = cmd[m.end(1):]
         if after.startswith("/"):
             continue
@@ -260,18 +262,29 @@ def check_doubled_flags(cmd):
           f"Suggested: {proposed}")
 
 
+_HEREDOC_RE = re.compile(
+    r"<<-?\s*['\"]?(\w+)['\"]?.*?\n(.*?\n)\1",
+    re.DOTALL,
+)
+
+
 def _strip_heredocs(cmd):
     """Remove heredoc bodies from a command string.
 
     Heredoc content is text payload, not shell-interpreted paths.
     Stripping it prevents false positives in path checks.
     """
-    return re.sub(
-        r"<<-?\s*['\"]?(\w+)['\"]?.*?\n(.*?\n)\1",
-        r"",
-        cmd,
-        flags=re.DOTALL,
-    )
+    return _HEREDOC_RE.sub("", cmd)
+
+
+def _in_heredoc(cmd, pos):
+    """Check if a position falls inside a heredoc body."""
+    for m in _HEREDOC_RE.finditer(cmd):
+        body_start = m.start(2)
+        body_end = m.end(2)
+        if body_start <= pos < body_end:
+            return True
+    return False
 
 
 def check_backslash_paths(cmd):
