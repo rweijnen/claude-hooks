@@ -239,19 +239,25 @@ def check_doubled_flags(cmd):
     # Skip URLs
     if re.search(r"https?://", cmd):
         return
+    # Collect all doubled-flag positions, then fix them all at once
+    fixes = []
     for m in re.finditer(r"(?:^|\s)(//([a-zA-Z]{1,4}))(?=\s|$|\")", cmd):
-        flag_full = m.group(1)
-        flag_name = m.group(2)
         # Skip if it looks like a UNC path (//server/share)
         after = cmd[m.end(1):]
         if after.startswith("/"):
             continue
-        proposed = cmd[:m.start(1)] + "/" + flag_name + cmd[m.end(1):]
-        log_fixup(cmd, proposed, "doubled_flag")
-        block(f"Doubled // flags break Windows commands in Git Bash. "
-              f"Single / works.\n"
-              f"Original:  {cmd}\n"
-              f"Suggested: {proposed}")
+        fixes.append((m.start(1), m.end(1), "/" + m.group(2)))
+    if not fixes:
+        return
+    # Build proposed by replacing all matches (reverse order to preserve offsets)
+    proposed = cmd
+    for start, end, replacement in reversed(fixes):
+        proposed = proposed[:start] + replacement + proposed[end:]
+    log_fixup(cmd, proposed, "doubled_flag")
+    block(f"Doubled // flags break Windows commands in Git Bash. "
+          f"Single / works.\n"
+          f"Original:  {cmd}\n"
+          f"Suggested: {proposed}")
 
 
 def _strip_heredocs(cmd):
