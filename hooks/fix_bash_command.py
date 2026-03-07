@@ -287,28 +287,37 @@ def _in_heredoc(cmd, pos):
     return False
 
 
-def check_backslash_paths(cmd):
-    r"""Fix F: detect Windows backslash paths in bash context.
+def fix_backslash_paths(cmd):
+    r"""Fix F: rewrite Windows backslash paths to forward slashes.
 
-    Matches drive-letter patterns like C:\Users, D:\temp outside single-quoted
-    strings.  The drive letter must be at a word boundary (not mid-word like
+    Matches drive-letter patterns like C:\Users, C:\\Users, C:\\\\Users
+    outside single-quoted strings and heredocs.  Any run of backslashes
+    is collapsed to a single forward slash -- no matter how many times
+    Claude doubled them.
+
+    The drive letter must be at a word boundary (not mid-word like
     HKCU\Software) to avoid false positives on registry paths.
+
+    Forward slashes work for virtually all Windows executables, so this is
+    safe as a silent auto-fix.  If a tool truly requires backslashes, use
+    single quotes (the check skips single-quoted content).
     """
     stripped = _strip_heredocs(cmd)
-    for m in re.finditer(r"(?<![A-Za-z])([A-Za-z]):\\([A-Za-z])", stripped):
+    needs_fix = False
+    for m in re.finditer(r"(?<![A-Za-z])([A-Za-z]):\\+([A-Za-z])", stripped):
         # Skip if inside single quotes (count odd quotes before match)
         before = stripped[:m.start()]
         if before.count("'") % 2 == 1:
             continue
-        proposed = re.sub(
-            r"(?<![A-Za-z])[A-Za-z]:\\[^\s'\"]*",
-            lambda m: m.group(0).replace("\\", "/"),
-            cmd,
-        )
-        log_fixup(cmd, proposed, "backslash_path")
-        block(f"Windows backslash paths don't work reliably in Git Bash.\n"
-              f"Original:  {cmd}\n"
-              f"Suggested: {proposed}")
+        needs_fix = True
+        break
+    if not needs_fix:
+        return cmd
+    return re.sub(
+        r"(?<![A-Za-z])[A-Za-z]:\\+[^\s'\"]*",
+        lambda m: re.sub(r"\\+", "/", m.group(0)),
+        cmd,
+    )
 
 
 def check_unc_paths(cmd):
@@ -321,6 +330,13 @@ def check_unc_paths(cmd):
     """
     stripped = _strip_heredocs(cmd)
     for m in re.finditer(r"(?:^|(?<=[\s\"'=]))\\\\([A-Za-z0-9._-]+)\\([^\s'\"]*)", stripped):
+        # Skip Python/C string escape sequences (\\x02, \\n, \\u0041, etc.)
+        server = m.group(1)
+        if re.match(
+            r"^(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}|[nrtabfv0])$",
+            server,
+        ):
+            continue
         # Skip if inside single quotes
         before = stripped[:m.start()]
         if before.count("'") % 2 == 1:
@@ -643,8 +659,6 @@ def main():
         check_reserved_names(command)
     if _is_enabled("doubled_flags"):
         check_doubled_flags(command)
-    if _is_enabled("backslash_paths"):
-        check_backslash_paths(command)
     if _is_enabled("unc_paths"):
         check_unc_paths(command)
 
@@ -654,6 +668,12 @@ def main():
         command = fix_nul_redirect(command)
         if command != original:
             fixes.append("replaced > nul with > /dev/null")
+
+    if _is_enabled("backslash_paths"):
+        prev = command
+        command = fix_backslash_paths(command)
+        if command != prev:
+            fixes.append("converted backslash paths to forward slashes")
 
     if _is_enabled("msys2_drive_paths"):
         prev = command
@@ -697,7 +717,11 @@ def main():
                     "command": command,
                     "description": tool_input.get("description", ""),
                 },
-                "additionalContext": "Hook auto-fixed: " + ", ".join(fixes),
+                "additionalContext": "Hook auto-fixed: " + ", ".join(fixes)
+                    + (". If a tool fails because it needs literal backslash "
+                       "paths, single-quote those arguments to bypass the fix."
+                       if "converted backslash paths to forward slashes" in fixes
+                       else ""),
             }
         }
         json.dump(output, sys.stdout)
