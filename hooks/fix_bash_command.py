@@ -599,6 +599,9 @@ def fix_bare_pwsh_cmdlet(cmd):
     fail in Git Bash. Wraps them with pwsh -NoProfile -Command '...'.
     Only triggers for approved PowerShell verbs to avoid false positives
     on things like VB-Script or OAuth-Token.
+
+    Inspired by @kmgallahan's Bash Syntax Auto-Corrector Hook:
+    https://github.com/anthropics/claude-code/issues/4928#issuecomment-3848600448
     """
     stripped = cmd.lstrip()
     if stripped.lower().startswith('pwsh'):
@@ -622,6 +625,9 @@ def fix_pwsh_noprofile(cmd):
 
     Profile loading adds latency and can cause side-effects. When Claude
     writes `pwsh -Command '...'` without -NoProfile, inject it.
+
+    Inspired by @kmgallahan's Bash Syntax Auto-Corrector Hook:
+    https://github.com/anthropics/claude-code/issues/4928#issuecomment-3848600448
     """
     stripped = cmd.lstrip()
     if not re.match(r'^pwsh(?:\.exe)?\s', stripped, re.IGNORECASE):
