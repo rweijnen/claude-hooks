@@ -162,3 +162,7 @@ Claude Code hooks receive a JSON object on stdin with `tool_name` and `tool_inpu
 - **Exit 0** with no output: allow the command unchanged
 - **Exit 0** with JSON on stdout: rewrite the command via `updatedInput`
 - **Exit 2** with a message on stderr: block the command and show the message to Claude
+
+## Credits
+
+- Bare PowerShell cmdlet wrapping and `-NoProfile` enforcement inspired by [@kmgallahan](https://github.com/kmgallahan)'s [Bash Syntax Auto-Corrector Hook](https://github.com/anthropics/claude-code/issues/4928#issuecomment-3848600448)
