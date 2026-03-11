@@ -5,7 +5,7 @@
   "_comment_msys2_drive_paths": "Auto-fix: /c/Users/... -> C:/Users/... (MSYS2 paths fail with Windows tools)",
   "msys2_drive_paths": true,
 
-  "_comment_backslash_paths": "Block: C:\\Users\\... -> suggest C:/Users/... (backslashes break in bash)",
+  "_comment_backslash_paths": "Auto-fix: C:\\Users\\... -> C:/Users/... (backslashes break in bash)",
   "backslash_paths": true,
 
   "_comment_unc_paths": "Block: \\\\server\\share -> suggest //server/share",
@@ -23,7 +23,7 @@
   "_comment_dir_windows_flags": "Auto-fix: dir /b -> ls -1, dir /s -> ls -R (dir in Git Bash is GNU coreutils)",
   "dir_windows_flags": true,
 
-  "_comment_doubled_flags": "Block: tasklist //fi -> suggest tasklist /fi (doubled // breaks Windows commands)",
+  "_comment_doubled_flags": "Auto-fix: tasklist //fi -> tasklist /fi (doubled // breaks Windows commands)",
   "doubled_flags": true,
 
   "_comment_dir_in_pwsh": "Block: pwsh -Command 'dir /b' -> suggest Get-ChildItem (PowerShell dir != cmd dir)",
@@ -37,6 +37,9 @@
 
   "_comment_wsl_invocation": "Block: wsl ls -> run ls directly (you're in Git Bash, not WSL)",
   "wsl_invocation": true,
+
+  "_comment_cmd_cd": "Auto-fix: cmd /c build.bat -> cmd /c \"cd <cwd> && build.bat\" (fix CWD inheritance)",
+  "cmd_cd": true,
 
   "_comment_start_command": "Auto-fix: start \"\" \"file\" -> python os.startfile() (avoids spawning cmd.exe)",
   "start_command": true,
