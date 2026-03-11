@@ -21,6 +21,7 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 | `dir /b` in bash | `dir /b path` | Auto-fix | Rewrite to `ls -1 path` |
 | Bare PS cmdlet | `Get-ChildItem C:/Users` | Auto-fix | Wrap with `pwsh -NoProfile -Command '...'` |
 | pwsh -NoProfile | `pwsh -Command '...'` | Auto-fix | Insert `-NoProfile` flag |
+| Windows env vars | `$USERPROFILE`, `$APPDATA`, `$LOCALAPPDATA` | Auto-fix | Rewrite to `$HOME` equivalents (forward-slash safe) |
 | cmd /c CWD | `cmd /c build.bat` | Auto-fix | Inject `cd /d <cwd>` so cmd.exe finds the script |
 | start command | `start "" "file.png"` | Auto-fix | Rewrite to `python os.startfile()` |
 | `dir /flag` in pwsh | `pwsh -Command "dir /b ..."` | Block | Suggest `Get-ChildItem` equivalent |
@@ -128,6 +129,7 @@ Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true
 | `backslash_paths` | Rewrite `C:\` to `C:/` | on | auto-fix |
 | `bare_pwsh_cmdlet` | Wrap bare PS cmdlets with `pwsh -NoProfile -Command` | on | auto-fix |
 | `pwsh_noprofile` | Insert `-NoProfile` into `pwsh -Command` | on | auto-fix |
+| `windows_env_vars` | Rewrite `$USERPROFILE` / `$APPDATA` / `$LOCALAPPDATA` to `$HOME` equivalents | on | auto-fix |
 | `cmd_cd` | Inject `cd /d` into `cmd /c` for correct CWD | on | auto-fix |
 | `start_command` | Rewrite `start` to `python os.startfile()` | on | auto-fix |
 | `unc_paths` | Block `\\server` UNC paths | on | block |
@@ -166,3 +168,4 @@ Claude Code hooks receive a JSON object on stdin with `tool_name` and `tool_inpu
 ## Credits
 
 - Bare PowerShell cmdlet wrapping and `-NoProfile` enforcement inspired by [@kmgallahan](https://github.com/kmgallahan)'s [Bash Syntax Auto-Corrector Hook](https://github.com/anthropics/claude-code/issues/4928#issuecomment-3848600448)
+- Windows env var replacement (`$USERPROFILE` / `$APPDATA` / `$LOCALAPPDATA` to `$HOME` equivalents) suggested by [@kmgallahan](https://github.com/kmgallahan)

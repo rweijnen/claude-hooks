@@ -42,6 +42,7 @@ _DEFAULTS = {
     "wsl_invocation": True,
     "bare_pwsh_cmdlet": True,
     "pwsh_noprofile": True,
+    "windows_env_vars": True,
     "cmd_cd": True,
     "start_command": True,
     "git_commit_attribution": False,
@@ -489,6 +490,40 @@ def fix_nul_redirect(cmd):
     )
 
 
+_WINDOWS_ENV_VARS = {
+    "USERPROFILE": "$HOME",
+    "APPDATA": "$HOME/AppData/Roaming",
+    "LOCALAPPDATA": "$HOME/AppData/Local",
+}
+
+_WINDOWS_ENV_RE = re.compile(
+    r"\$\{?(" + "|".join(_WINDOWS_ENV_VARS) + r")\}?",
+)
+
+
+def fix_windows_env_vars(cmd):
+    r"""Fix O: replace Windows env vars with bash-safe equivalents.
+
+    $USERPROFILE, $APPDATA, $LOCALAPPDATA resolve to backslash paths in
+    Git Bash (C:\Users\name). When expanded inside string literals (e.g.
+    python -c), backslashes cause errors (\U = Python unicode escape).
+    $HOME resolves to /c/Users/name (forward slashes, safe).
+
+    Skips commands starting with pwsh or powershell, where the Windows
+    env vars are native and correct.
+
+    Credit: @kmgallahan
+    """
+    stripped = cmd.lstrip()
+    if re.match(r"(?:pwsh|powershell)(?:\.exe)?\s", stripped, re.IGNORECASE):
+        return cmd
+
+    return _WINDOWS_ENV_RE.sub(
+        lambda m: _WINDOWS_ENV_VARS[m.group(1)],
+        cmd,
+    )
+
+
 def fix_msys2_drive_paths(cmd):
     """Fix G: /c/Work/... -> C:/Work/...
 
@@ -842,6 +877,12 @@ def main():
         command = fix_nul_redirect(command)
         if command != original:
             fixes.append("replaced > nul with > /dev/null")
+
+    if _is_enabled("windows_env_vars"):
+        prev = command
+        command = fix_windows_env_vars(command)
+        if command != prev:
+            fixes.append("replaced Windows env vars with bash-safe equivalents")
 
     if _is_enabled("backslash_paths"):
         prev = command
