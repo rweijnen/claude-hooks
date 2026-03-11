@@ -44,6 +44,9 @@
   "_comment_pwsh_noprofile": "Auto-fix: pwsh -Command -> pwsh -NoProfile -Command (skip profile loading)",
   "pwsh_noprofile": true,
 
+  "_comment_windows_env_vars": "Auto-fix: $USERPROFILE -> $HOME, $APPDATA -> $HOME/AppData/Roaming (backslash-safe)",
+  "windows_env_vars": true,
+
   "_comment_cmd_cd": "Auto-fix: cmd /c build.bat -> cmd /c \"cd /d <cwd> && build.bat\" (fix CWD inheritance)",
   "cmd_cd": true,
 

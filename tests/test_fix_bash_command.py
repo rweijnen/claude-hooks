@@ -14,6 +14,7 @@ from fix_bash_command import (
     fix_cmd_cd,
     fix_bare_pwsh_cmdlet,
     fix_pwsh_noprofile,
+    fix_windows_env_vars,
 )
 
 
@@ -269,3 +270,48 @@ class TestFixPwshNoprofile:
     def test_not_pwsh_unchanged(self):
         cmd = "python -c 'print(1)'"
         assert fix_pwsh_noprofile(cmd) == cmd
+
+
+# ---------------------------------------------------------------------------
+# fix_windows_env_vars (tier 1 auto-fix)
+# ---------------------------------------------------------------------------
+
+class TestFixWindowsEnvVars:
+    def test_userprofile(self):
+        assert fix_windows_env_vars("echo $USERPROFILE") == "echo $HOME"
+
+    def test_appdata(self):
+        assert fix_windows_env_vars("ls $APPDATA") == "ls $HOME/AppData/Roaming"
+
+    def test_localappdata(self):
+        assert fix_windows_env_vars("ls $LOCALAPPDATA") == "ls $HOME/AppData/Local"
+
+    def test_braced_userprofile(self):
+        assert fix_windows_env_vars("echo ${USERPROFILE}") == "echo $HOME"
+
+    def test_braced_appdata(self):
+        assert fix_windows_env_vars("echo ${APPDATA}") == "echo $HOME/AppData/Roaming"
+
+    def test_braced_localappdata(self):
+        assert fix_windows_env_vars("echo ${LOCALAPPDATA}") == "echo $HOME/AppData/Local"
+
+    def test_pwsh_skipped(self):
+        cmd = "pwsh -Command 'echo $USERPROFILE'"
+        assert fix_windows_env_vars(cmd) == cmd
+
+    def test_powershell_exe_skipped(self):
+        cmd = "powershell.exe -Command 'echo $APPDATA'"
+        assert fix_windows_env_vars(cmd) == cmd
+
+    def test_no_env_var_unchanged(self):
+        cmd = "echo hello"
+        assert fix_windows_env_vars(cmd) == cmd
+
+    def test_multiple_vars(self):
+        cmd = "cp $USERPROFILE/file $LOCALAPPDATA/dest"
+        assert fix_windows_env_vars(cmd) == "cp $HOME/file $HOME/AppData/Local/dest"
+
+    def test_in_python_command(self):
+        cmd = 'python -c "import os; print(os.path.join(\'$USERPROFILE\', \'docs\'))"'
+        expected = 'python -c "import os; print(os.path.join(\'$HOME\', \'docs\'))"'
+        assert fix_windows_env_vars(cmd) == expected
