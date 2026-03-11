@@ -40,6 +40,7 @@ _DEFAULTS = {
     "pwsh_quoting": True,
     "powershell_legacy": True,
     "wsl_invocation": True,
+    "cmd_cd": True,
     "start_command": True,
     "git_commit_attribution": False,
     "git_commit_generated": False,
@@ -225,8 +226,8 @@ def check_git_commit_emoji(cmd):
               "Use plain text in commit messages.")
 
 
-def check_doubled_flags(cmd):
-    """Fix E: detect unnecessary // flag doubling for Windows commands.
+def fix_doubled_flags(cmd):
+    """Fix E: auto-fix unnecessary // flag doubling for Windows commands.
 
     Testing on this system confirmed:
       - tasklist /fi   -> works
@@ -238,28 +239,24 @@ def check_doubled_flags(cmd):
     """
     # Skip URLs
     if re.search(r"https?://", cmd):
-        return
+        return cmd
     flag_re = re.compile(r"(?:^|\s)(//([a-zA-Z]{1,4}))(?=\s|$|\")")
     # Collect flags outside heredocs and UNC paths
-    fixes = []
+    matches = []
     for m in flag_re.finditer(cmd):
         if _in_heredoc(cmd, m.start(1)):
             continue
         after = cmd[m.end(1):]
         if after.startswith("/"):
             continue
-        fixes.append((m.start(1), m.end(1), "/" + m.group(2)))
-    if not fixes:
-        return
-    # Build proposed by replacing all matches (reverse order to preserve offsets)
-    proposed = cmd
-    for start, end, replacement in reversed(fixes):
-        proposed = proposed[:start] + replacement + proposed[end:]
-    log_fixup(cmd, proposed, "doubled_flag")
-    block(f"Doubled // flags break Windows commands in Git Bash. "
-          f"Single / works.\n"
-          f"Original:  {cmd}\n"
-          f"Suggested: {proposed}")
+        matches.append((m.start(1), m.end(1), "/" + m.group(2)))
+    if not matches:
+        return cmd
+    # Build fixed command by replacing all matches (reverse order to preserve offsets)
+    fixed = cmd
+    for start, end, replacement in reversed(matches):
+        fixed = fixed[:start] + replacement + fixed[end:]
+    return fixed
 
 
 _HEREDOC_RE = re.compile(
@@ -622,6 +619,62 @@ def fix_start_command(cmd):
     return f"python -c \"import os; os.startfile('{escaped}')\""
 
 
+def fix_cmd_cd(cmd):
+    """Fix L: inject cd into cmd /c so cmd.exe starts in the right directory.
+
+    cmd.exe doesn't reliably inherit Git Bash's CWD, so `cmd /c build.bat`
+    fails when run from a cd'd directory. This fix:
+
+    1. `cd DIR && cmd /c args [suffix]` -> `cmd /c "cd DIR && args" [suffix]`
+    2. `cmd /c args` (no preceding cd)  -> `cmd /c "cd <cwd> && args"`
+
+    The suffix (2>&1, |, etc.) is preserved outside the quoted block.
+    Already-quoted args are unwrapped and re-wrapped.
+    """
+    # Match optional `cd DIR &&` prefix, then `cmd /c`, then args
+    # The /c flag may have been doubled (//c) and already fixed by fix_doubled_flags
+    m = re.match(
+        r'^(?:cd\s+("(?:[^"]+)"|[^\s&]+)\s*&&\s*)?'  # optional: cd DIR &&
+        r'cmd(?:\.exe)?\s+/c\s+'                       # cmd /c
+        r'(.*)',                                         # args (greedy)
+        cmd,
+        re.IGNORECASE,
+    )
+    if not m:
+        return cmd
+
+    cd_dir = m.group(1)  # None if no preceding cd
+    args_and_suffix = m.group(2).strip()
+
+    if not args_and_suffix:
+        return cmd
+
+    # Split trailing redirections/pipes from the args
+    # Match: 2>&1, >&2, |, || ..., && ... at the end
+    suffix_m = re.search(r'\s+((?:[12]>&[12]|[|>]|&&\s).*)$', args_and_suffix)
+    if suffix_m:
+        args = args_and_suffix[:suffix_m.start()].strip()
+        suffix = ' ' + suffix_m.group(1)
+    else:
+        args = args_and_suffix
+        suffix = ''
+
+    # Unwrap existing quotes around args: cmd /c "foo bar" -> foo bar
+    if args.startswith('"') and args.endswith('"'):
+        args = args[1:-1]
+
+    # Determine the directory to cd into
+    if cd_dir:
+        # Strip quotes from cd dir if present
+        if cd_dir.startswith('"') and cd_dir.endswith('"'):
+            cd_dir = cd_dir[1:-1]
+        directory = cd_dir
+    else:
+        directory = os.getcwd().replace('\\', '/')
+
+    return f'cmd /c "cd {directory} && {args}"{suffix}'
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -657,12 +710,16 @@ def main():
         check_dir_in_pwsh(command)
     if _is_enabled("reserved_names"):
         check_reserved_names(command)
-    if _is_enabled("doubled_flags"):
-        check_doubled_flags(command)
     if _is_enabled("unc_paths"):
         check_unc_paths(command)
 
     # -- Tier 1 auto-fixes --------------------------------------------------
+
+    if _is_enabled("doubled_flags"):
+        prev = command
+        command = fix_doubled_flags(command)
+        if command != prev:
+            fixes.append("replaced doubled // flags with single /")
 
     if _is_enabled("nul_redirect"):
         command = fix_nul_redirect(command)
@@ -706,6 +763,12 @@ def main():
         command = fix_start_command(command)
         if command != prev:
             fixes.append("replaced start with os.startfile()")
+
+    if _is_enabled("cmd_cd"):
+        prev = command
+        command = fix_cmd_cd(command)
+        if command != prev:
+            fixes.append("injected cd into cmd /c for correct working directory")
 
     # -- Emit result --------------------------------------------------------
     if fixes:
