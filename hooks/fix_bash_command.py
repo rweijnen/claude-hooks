@@ -40,6 +40,8 @@ _DEFAULTS = {
     "pwsh_quoting": True,
     "powershell_legacy": True,
     "wsl_invocation": True,
+    "bare_pwsh_cmdlet": True,
+    "pwsh_noprofile": True,
     "cmd_cd": True,
     "start_command": True,
     "git_commit_attribution": False,
@@ -560,6 +562,88 @@ def fix_dir_windows_flags(cmd):
     return ls_cmd.strip()
 
 
+# PowerShell approved verbs -- used to detect bare cmdlets like Get-ChildItem
+# https://learn.microsoft.com/en-us/powershell/scripting/developer/cmdlet/approved-verbs-for-windows-powershell-commands
+_PS_APPROVED_VERBS = frozenset({
+    # Common
+    "Add", "Clear", "Close", "Copy", "Enter", "Exit", "Find", "Format",
+    "Get", "Hide", "Join", "Lock", "Move", "New", "Open", "Optimize",
+    "Pop", "Push", "Redo", "Remove", "Rename", "Reset", "Resize",
+    "Search", "Select", "Set", "Show", "Skip", "Split", "Step",
+    "Switch", "Undo", "Unlock", "Watch",
+    # Communications
+    "Connect", "Disconnect", "Read", "Receive", "Send", "Write",
+    # Data
+    "Backup", "Checkpoint", "Compare", "Compress", "Convert",
+    "ConvertFrom", "ConvertTo", "Dismount", "Edit", "Expand", "Export",
+    "Group", "Import", "Initialize", "Limit", "Merge", "Mount", "Out",
+    "Publish", "Restore", "Save", "Sync", "Unpublish", "Update",
+    # Diagnostic
+    "Debug", "Measure", "Ping", "Repair", "Resolve", "Test", "Trace",
+    # Lifecycle
+    "Approve", "Assert", "Build", "Complete", "Confirm", "Deny",
+    "Deploy", "Disable", "Enable", "Install", "Invoke", "Register",
+    "Request", "Restart", "Resume", "Start", "Stop", "Submit",
+    "Suspend", "Uninstall", "Unregister", "Wait",
+    # Security
+    "Block", "Grant", "Protect", "Revoke", "Unblock", "Unprotect",
+})
+
+_BARE_CMDLET_RE = re.compile(r'^([A-Z][a-zA-Z]*)-([A-Z][a-zA-Z]+)\b')
+
+
+def fix_bare_pwsh_cmdlet(cmd):
+    """Fix M: wrap bare PowerShell cmdlets with pwsh -NoProfile -Command.
+
+    Claude sometimes emits bare PS cmdlets (Get-ChildItem, Test-Path) that
+    fail in Git Bash. Wraps them with pwsh -NoProfile -Command '...'.
+    Only triggers for approved PowerShell verbs to avoid false positives
+    on things like VB-Script or OAuth-Token.
+    """
+    stripped = cmd.lstrip()
+    if stripped.lower().startswith('pwsh'):
+        return cmd
+
+    m = _BARE_CMDLET_RE.match(stripped)
+    if not m:
+        return cmd
+
+    verb = m.group(1)
+    if verb not in _PS_APPROVED_VERBS:
+        return cmd
+
+    # Escape single quotes for PowerShell ('  -> '')
+    escaped = stripped.replace("'", "''")
+    return f"pwsh -NoProfile -Command '{escaped}'"
+
+
+def fix_pwsh_noprofile(cmd):
+    """Fix N: insert -NoProfile into pwsh -Command invocations.
+
+    Profile loading adds latency and can cause side-effects. When Claude
+    writes `pwsh -Command '...'` without -NoProfile, inject it.
+    """
+    stripped = cmd.lstrip()
+    if not re.match(r'^pwsh(?:\.exe)?\s', stripped, re.IGNORECASE):
+        return cmd
+
+    # Must have -Command or -c
+    if not re.search(r'\s-(?:Command|c)\b', stripped, re.IGNORECASE):
+        return cmd
+
+    # Already has -NoProfile or -nop
+    if re.search(r'-(?:NoProfile|nop)\b', stripped, re.IGNORECASE):
+        return cmd
+
+    # Insert -NoProfile after pwsh
+    return re.sub(
+        r'^(pwsh(?:\.exe)?)\s',
+        r'\1 -NoProfile ',
+        stripped,
+        flags=re.IGNORECASE,
+    )
+
+
 def fix_pwsh_quoting(cmd):
     """Fix D: pwsh -Command "...$..." -> single quotes.
 
@@ -620,16 +704,19 @@ def fix_start_command(cmd):
 
 
 def fix_cmd_cd(cmd):
-    """Fix L: inject cd into cmd /c so cmd.exe starts in the right directory.
+    """Fix L: inject cd /d into cmd /c so cmd.exe starts in the right directory.
 
     cmd.exe doesn't reliably inherit Git Bash's CWD, so `cmd /c build.bat`
-    fails when run from a cd'd directory. This fix:
+    fails when run from a cd'd directory. Uses `cd /d` so cross-drive
+    switches work (plain `cd` silently fails across drives). This fix:
 
-    1. `cd DIR && cmd /c args [suffix]` -> `cmd /c "cd DIR && args" [suffix]`
-    2. `cmd /c args` (no preceding cd)  -> `cmd /c "cd <cwd> && args"`
+    1. `cd DIR && cmd /c args [suffix]` -> `cmd /c "cd /d DIR && args" [suffix]`
+    2. `cmd /c "cd DIR && args"`        -> `cmd /c "cd /d DIR && args"`
+    3. `cmd /c args` (no preceding cd)  -> `cmd /c "cd /d <cwd> && args"`
 
     The suffix (2>&1, |, etc.) is preserved outside the quoted block.
-    Already-quoted args are unwrapped and re-wrapped.
+    Outer quotes on args are unwrapped BEFORE suffix splitting to prevent
+    the suffix regex from matching && inside quoted cmd.exe commands.
     """
     # Match optional `cd DIR &&` prefix, then `cmd /c`, then args
     # The /c flag may have been doubled (//c) and already fixed by fix_doubled_flags
@@ -649,22 +736,40 @@ def fix_cmd_cd(cmd):
     if not args_and_suffix:
         return cmd
 
-    # Split trailing redirections/pipes from the args
-    # Match: 2>&1, >&2, |, || ..., && ... at the end
-    suffix_m = re.search(r'\s+((?:[12]>&[12]|[|>]|&&\s).*)$', args_and_suffix)
-    if suffix_m:
-        args = args_and_suffix[:suffix_m.start()].strip()
-        suffix = ' ' + suffix_m.group(1)
+    # Unwrap outer quotes BEFORE splitting suffix -- prevents the suffix
+    # regex from matching && inside quoted args like "cd DIR && build.bat"
+    if args_and_suffix.startswith('"'):
+        close_idx = args_and_suffix.find('"', 1)
+        if close_idx > 0:
+            args = args_and_suffix[1:close_idx]
+            suffix = args_and_suffix[close_idx + 1:]
+        else:
+            args = args_and_suffix[1:]
+            suffix = ''
     else:
-        args = args_and_suffix
-        suffix = ''
+        # Split trailing redirections/pipes from the args
+        # Match: 2>&1, >&2, |, || ..., && ... at the end
+        suffix_m = re.search(r'\s+((?:[12]>&[12]|[|>]|&&\s).*)$', args_and_suffix)
+        if suffix_m:
+            args = args_and_suffix[:suffix_m.start()].strip()
+            suffix = ' ' + suffix_m.group(1)
+        else:
+            args = args_and_suffix
+            suffix = ''
 
-    # Unwrap existing quotes around args: cmd /c "foo bar" -> foo bar
-    if args.startswith('"') and args.endswith('"'):
-        args = args[1:-1]
-
-    # Determine the directory to cd into
-    if cd_dir:
+    # Check if args themselves start with "cd [/d] DIR &&" (cd inside cmd /c quotes)
+    inner_cd = re.match(
+        r'^cd(?:\s+/d)?\s+("(?:[^"]+)"|[^\s&]+)\s*&&\s*(.*)',
+        args,
+        re.IGNORECASE,
+    )
+    if inner_cd and not cd_dir:
+        inner_dir = inner_cd.group(1)
+        if inner_dir.startswith('"') and inner_dir.endswith('"'):
+            inner_dir = inner_dir[1:-1]
+        directory = inner_dir
+        args = inner_cd.group(2).strip()
+    elif cd_dir:
         # Strip quotes from cd dir if present
         if cd_dir.startswith('"') and cd_dir.endswith('"'):
             cd_dir = cd_dir[1:-1]
@@ -672,7 +777,13 @@ def fix_cmd_cd(cmd):
     else:
         directory = os.getcwd().replace('\\', '/')
 
-    return f'cmd /c "cd {directory} && {args}"{suffix}'
+    # Prepend .\ to bare .bat/.cmd scripts so cmd.exe finds them in the
+    # current directory even when NoDefaultCurrentDirectoryInExePath is set.
+    first_token = args.split()[0] if args.split() else ''
+    if re.match(r'^[^/\\]+\.(bat|cmd)$', first_token, re.IGNORECASE):
+        args = r'.\{}'.format(args)
+
+    return f'cmd /c "cd /d {directory} && {args}"{suffix}'
 
 
 # ---------------------------------------------------------------------------
@@ -749,6 +860,18 @@ def main():
         command = fix_dir_windows_flags(command)
         if command != prev:
             fixes.append("converted Windows dir /flags to ls equivalent")
+
+    if _is_enabled("bare_pwsh_cmdlet"):
+        prev = command
+        command = fix_bare_pwsh_cmdlet(command)
+        if command != prev:
+            fixes.append("wrapped bare PowerShell cmdlet with pwsh -NoProfile -Command")
+
+    if _is_enabled("pwsh_noprofile"):
+        prev = command
+        command = fix_pwsh_noprofile(command)
+        if command != prev:
+            fixes.append("inserted -NoProfile into pwsh invocation")
 
     if _is_enabled("pwsh_quoting"):
         prev = command

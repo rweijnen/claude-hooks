@@ -9,7 +9,12 @@ import pytest
 # Add hooks/ to path so we can import the module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "hooks"))
 
-from fix_bash_command import fix_doubled_flags, fix_cmd_cd
+from fix_bash_command import (
+    fix_doubled_flags,
+    fix_cmd_cd,
+    fix_bare_pwsh_cmdlet,
+    fix_pwsh_noprofile,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -66,31 +71,31 @@ class TestFixDoubledFlags:
 class TestFixCmdCd:
     def test_cd_and_cmd_c(self):
         result = fix_cmd_cd("cd C:/Work/project && cmd /c build.bat 2>&1")
-        assert result == 'cmd /c "cd C:/Work/project && build.bat" 2>&1'
+        assert result == r'cmd /c "cd /d C:/Work/project && .\build.bat" 2>&1'
 
     def test_bare_cmd_c_uses_cwd(self):
         with patch("fix_bash_command.os.getcwd", return_value=r"C:\Users\me\project"):
             result = fix_cmd_cd("cmd /c build.bat")
-        assert result == 'cmd /c "cd C:/Users/me/project && build.bat"'
+        assert result == r'cmd /c "cd /d C:/Users/me/project && .\build.bat"'
 
     def test_already_quoted_args(self):
         with patch("fix_bash_command.os.getcwd", return_value=r"C:\Work"):
             result = fix_cmd_cd('cmd /c "build.bat --verbose"')
-        assert result == 'cmd /c "cd C:/Work && build.bat --verbose"'
+        assert result == r'cmd /c "cd /d C:/Work && .\build.bat --verbose"'
 
     def test_cd_with_quoted_dir(self):
         result = fix_cmd_cd('cd "C:/My Projects" && cmd /c build.bat')
-        assert result == 'cmd /c "cd C:/My Projects && build.bat"'
+        assert result == r'cmd /c "cd /d C:/My Projects && .\build.bat"'
 
     def test_preserves_2_redirect(self):
         with patch("fix_bash_command.os.getcwd", return_value=r"C:\Work"):
             result = fix_cmd_cd("cmd /c build.bat 2>&1")
-        assert result == 'cmd /c "cd C:/Work && build.bat" 2>&1'
+        assert result == r'cmd /c "cd /d C:/Work && .\build.bat" 2>&1'
 
     def test_preserves_pipe(self):
         with patch("fix_bash_command.os.getcwd", return_value=r"C:\Work"):
             result = fix_cmd_cd("cmd /c build.bat | grep error")
-        assert result == 'cmd /c "cd C:/Work && build.bat" | grep error'
+        assert result == r'cmd /c "cd /d C:/Work && .\build.bat" | grep error'
 
     def test_no_cmd_c_unchanged(self):
         cmd = "python build.py"
@@ -99,7 +104,7 @@ class TestFixCmdCd:
     def test_cmd_exe_variant(self):
         with patch("fix_bash_command.os.getcwd", return_value=r"C:\Work"):
             result = fix_cmd_cd("cmd.exe /c build.bat")
-        assert result == 'cmd /c "cd C:/Work && build.bat"'
+        assert result == r'cmd /c "cd /d C:/Work && .\build.bat"'
 
     def test_empty_args_unchanged(self):
         # Edge case: cmd /c with nothing after it
@@ -110,8 +115,20 @@ class TestFixCmdCd:
         """os.getcwd() on Windows returns backslashes; they should be converted."""
         with patch("fix_bash_command.os.getcwd", return_value=r"C:\Users\me\src"):
             result = fix_cmd_cd("cmd /c test.bat")
-        assert "\\" not in result
         assert "C:/Users/me/src" in result
+        assert r".\test.bat" in result
+
+    def test_exe_not_prefixed(self):
+        r"""Non-.bat/.cmd args should not get .\ prefix."""
+        with patch("fix_bash_command.os.getcwd", return_value=r"C:\Work"):
+            result = fix_cmd_cd("cmd /c msbuild /p:Config=Release")
+        assert result == 'cmd /c "cd /d C:/Work && msbuild /p:Config=Release"'
+
+    def test_path_bat_not_prefixed(self):
+        r"""A .bat with a path already should not get .\ prefix."""
+        with patch("fix_bash_command.os.getcwd", return_value=r"C:\Work"):
+            result = fix_cmd_cd("cmd /c C:/scripts/build.bat")
+        assert result == r'cmd /c "cd /d C:/Work && C:/scripts/build.bat"'
 
 
 # ---------------------------------------------------------------------------
@@ -129,11 +146,126 @@ class TestDoubledFlagsThenCmdCd:
         # Step 2: inject cd
         with patch("fix_bash_command.os.getcwd", return_value=r"C:\Work"):
             cmd = fix_cmd_cd(cmd)
-        assert cmd == 'cmd /c "cd C:/Work && build.bat"'
+        assert cmd == r'cmd /c "cd /d C:/Work && .\build.bat"'
 
     def test_cd_with_doubled_flag(self):
         cmd = "cd C:/Work && cmd //c build.bat 2>&1"
         cmd = fix_doubled_flags(cmd)
         assert cmd == "cd C:/Work && cmd /c build.bat 2>&1"
         cmd = fix_cmd_cd(cmd)
-        assert cmd == 'cmd /c "cd C:/Work && build.bat" 2>&1'
+        assert cmd == r'cmd /c "cd /d C:/Work && .\build.bat" 2>&1'
+
+
+# ---------------------------------------------------------------------------
+# fix_cmd_cd bugfixes (quoted args + cd /d)
+# ---------------------------------------------------------------------------
+
+class TestFixCmdCdBugfixes:
+    def test_quoted_args_with_inner_cd_not_garbled(self):
+        """Bug A: && inside quoted args must not be split by suffix regex."""
+        result = fix_cmd_cd('cmd /c "cd C:/Work/project && build.bat"')
+        assert result == r'cmd /c "cd /d C:/Work/project && .\build.bat"'
+
+    def test_quoted_args_with_inner_cd_and_redirect(self):
+        """Bug A variant: quoted args with inner cd AND trailing redirect."""
+        result = fix_cmd_cd('cmd /c "cd C:/Work && build.bat" 2>&1')
+        # The redirect is outside the quotes, so it stays as suffix
+        # The inner cd gets /d added
+        assert result == r'cmd /c "cd /d C:/Work && .\build.bat" 2>&1'
+
+    def test_cd_d_used_for_cross_drive(self):
+        """Bug B: cd /d is used so cross-drive switches work."""
+        with patch("fix_bash_command.os.getcwd", return_value=r"D:\Build"):
+            result = fix_cmd_cd("cmd /c build.bat")
+        assert result == r'cmd /c "cd /d D:/Build && .\build.bat"'
+
+    def test_inner_cd_already_has_d_flag(self):
+        """Idempotent: inner cd /d is preserved, not doubled."""
+        result = fix_cmd_cd('cmd /c "cd /d C:/Work && build.bat"')
+        assert result == r'cmd /c "cd /d C:/Work && .\build.bat"'
+
+    def test_quoted_args_without_inner_cd(self):
+        """Quoted args without inner cd still get CWD injected."""
+        with patch("fix_bash_command.os.getcwd", return_value=r"C:\Work"):
+            result = fix_cmd_cd('cmd /c "build.bat --verbose"')
+        assert result == r'cmd /c "cd /d C:/Work && .\build.bat --verbose"'
+
+
+# ---------------------------------------------------------------------------
+# fix_bare_pwsh_cmdlet (tier 1 auto-fix)
+# ---------------------------------------------------------------------------
+
+class TestFixBarePwshCmdlet:
+    def test_get_childitem(self):
+        result = fix_bare_pwsh_cmdlet("Get-ChildItem C:/Users")
+        assert result == "pwsh -NoProfile -Command 'Get-ChildItem C:/Users'"
+
+    def test_test_path(self):
+        result = fix_bare_pwsh_cmdlet("Test-Path C:/file")
+        assert result == "pwsh -NoProfile -Command 'Test-Path C:/file'"
+
+    def test_write_host_with_single_quotes(self):
+        """Single quotes in the command are escaped for PowerShell."""
+        result = fix_bare_pwsh_cmdlet("Write-Host 'hello'")
+        assert result == "pwsh -NoProfile -Command 'Write-Host ''hello'''"
+
+    def test_already_wrapped_unchanged(self):
+        cmd = "pwsh -Command 'Get-ChildItem'"
+        assert fix_bare_pwsh_cmdlet(cmd) == cmd
+
+    def test_not_cmdlet_unchanged(self):
+        cmd = "ls -la"
+        assert fix_bare_pwsh_cmdlet(cmd) == cmd
+
+    def test_unapproved_verb_unchanged(self):
+        """VB-Script matches Verb-Noun pattern but VB is not an approved verb."""
+        cmd = "VB-Script foo"
+        assert fix_bare_pwsh_cmdlet(cmd) == cmd
+
+    def test_lowercase_verb_unchanged(self):
+        """Bare cmdlets must start with uppercase verb."""
+        cmd = "get-childitem C:/Users"
+        assert fix_bare_pwsh_cmdlet(cmd) == cmd
+
+    def test_invoke_expression(self):
+        result = fix_bare_pwsh_cmdlet("Invoke-Expression 'dir'")
+        assert result == "pwsh -NoProfile -Command 'Invoke-Expression ''dir'''"
+
+    def test_select_string(self):
+        result = fix_bare_pwsh_cmdlet("Select-String -Pattern test C:/file.txt")
+        assert result == "pwsh -NoProfile -Command 'Select-String -Pattern test C:/file.txt'"
+
+
+# ---------------------------------------------------------------------------
+# fix_pwsh_noprofile (tier 1 auto-fix)
+# ---------------------------------------------------------------------------
+
+class TestFixPwshNoprofile:
+    def test_adds_noprofile(self):
+        result = fix_pwsh_noprofile("pwsh -Command 'foo'")
+        assert result == "pwsh -NoProfile -Command 'foo'"
+
+    def test_already_has_noprofile(self):
+        cmd = "pwsh -NoProfile -Command 'foo'"
+        assert fix_pwsh_noprofile(cmd) == cmd
+
+    def test_already_has_nop_abbreviation(self):
+        cmd = "pwsh -nop -Command 'foo'"
+        assert fix_pwsh_noprofile(cmd) == cmd
+
+    def test_file_flag_unchanged(self):
+        """pwsh -File does not need -NoProfile injection."""
+        cmd = "pwsh -File script.ps1"
+        assert fix_pwsh_noprofile(cmd) == cmd
+
+    def test_short_c_flag(self):
+        result = fix_pwsh_noprofile("pwsh -c 'Get-Process'")
+        assert result == "pwsh -NoProfile -c 'Get-Process'"
+
+    def test_pwsh_exe_variant(self):
+        result = fix_pwsh_noprofile("pwsh.exe -Command 'foo'")
+        assert result == "pwsh.exe -NoProfile -Command 'foo'"
+
+    def test_not_pwsh_unchanged(self):
+        cmd = "python -c 'print(1)'"
+        assert fix_pwsh_noprofile(cmd) == cmd

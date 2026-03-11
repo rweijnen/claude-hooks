@@ -19,7 +19,9 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 | WSL mount paths | `/mnt/c/Users/...` | Block | Suggest `C:/Users/...` |
 | Legacy PowerShell | `powershell.exe ...` | Block | Suggest `pwsh`; use full path to opt in to PS 5.1 |
 | `dir /b` in bash | `dir /b path` | Auto-fix | Rewrite to `ls -1 path` |
-| cmd /c CWD | `cmd /c build.bat` | Auto-fix | Inject `cd <cwd>` so cmd.exe finds the script |
+| Bare PS cmdlet | `Get-ChildItem C:/Users` | Auto-fix | Wrap with `pwsh -NoProfile -Command '...'` |
+| pwsh -NoProfile | `pwsh -Command '...'` | Auto-fix | Insert `-NoProfile` flag |
+| cmd /c CWD | `cmd /c build.bat` | Auto-fix | Inject `cd /d <cwd>` so cmd.exe finds the script |
 | start command | `start "" "file.png"` | Auto-fix | Rewrite to `python os.startfile()` |
 | `dir /flag` in pwsh | `pwsh -Command "dir /b ..."` | Block | Suggest `Get-ChildItem` equivalent |
 | Emoji in files | Write/Edit with emoji | Block | Reject with message |
@@ -124,7 +126,9 @@ Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true
 | `pwsh_quoting` | Fix pwsh double-quote to single-quote | on | auto-fix |
 | `doubled_flags` | Rewrite `//flag` to `/flag` | on | auto-fix |
 | `backslash_paths` | Rewrite `C:\` to `C:/` | on | auto-fix |
-| `cmd_cd` | Inject `cd` into `cmd /c` for correct CWD | on | auto-fix |
+| `bare_pwsh_cmdlet` | Wrap bare PS cmdlets with `pwsh -NoProfile -Command` | on | auto-fix |
+| `pwsh_noprofile` | Insert `-NoProfile` into `pwsh -Command` | on | auto-fix |
+| `cmd_cd` | Inject `cd /d` into `cmd /c` for correct CWD | on | auto-fix |
 | `start_command` | Rewrite `start` to `python os.startfile()` | on | auto-fix |
 | `unc_paths` | Block `\\server` UNC paths | on | block |
 | `wsl_paths` | Block `/mnt/c/` WSL-style paths | on | block |
