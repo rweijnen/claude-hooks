@@ -91,7 +91,11 @@ def patch_settings(settings_file, hooks_dst):
             settings = json.load(f)
 
     settings.setdefault("hooks", {})
-    settings["hooks"]["PreToolUse"] = hooks_config(hooks_dst)["PreToolUse"]
+    our_entries = hooks_config(hooks_dst)["PreToolUse"]
+    our_matchers = {e["matcher"] for e in our_entries}
+    existing = [e for e in settings["hooks"].get("PreToolUse", [])
+                if e.get("matcher") not in our_matchers]
+    settings["hooks"]["PreToolUse"] = existing + our_entries
 
     settings_file.parent.mkdir(parents=True, exist_ok=True)
     with open(settings_file, "w", encoding="utf-8") as f:
