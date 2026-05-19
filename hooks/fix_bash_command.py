@@ -538,9 +538,24 @@ def fix_msys2_drive_paths(cmd):
     )
 
 
+_SSH_CLIENT_RE = re.compile(
+    r'(?:^|")\s*(?:[A-Za-z]:[/\\][^"]*\\)?(?:ssh|plink(?:\.exe)?)\s',
+    re.IGNORECASE,
+)
+
+
 def fix_python3(cmd):
-    """Fix B: python3 -> python (Windows Store alias, not real Python)."""
-    return re.sub(r"\bpython3\b", "python", cmd)
+    """Fix B: python3 -> python (Windows Store alias, not real Python).
+
+    Skips SSH/plink commands: the remote host may legitimately need python3,
+    and we cannot distinguish the local command from the quoted remote payload.
+
+    Also avoids corrupting version-specific paths like /usr/bin/python3.9 by
+    requiring that python3 is not followed by a digit or dot.
+    """
+    if _SSH_CLIENT_RE.search(cmd):
+        return cmd
+    return re.sub(r"\bpython3(?![\d.])", "python", cmd)
 
 
 # Mapping of Windows cmd.exe 'dir' flags to GNU 'ls' equivalents
