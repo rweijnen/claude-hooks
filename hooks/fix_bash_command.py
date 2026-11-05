@@ -10,6 +10,7 @@ Both tiers log to fixups.log next to this script for review.
 """
 
 import bisect
+import difflib
 import functools
 import json
 import os
@@ -119,8 +120,9 @@ def _trim_log_if_needed():
     FIXUPS_LOG.write_text("\n".join(reversed(kept)) + "\n", encoding="utf-8", newline="\n")
 
 
-def _log_entry(entry_type, fix_type, original, proposed=None, fixes=None):
-    """Append a structured log entry."""
+def _log_entry(entry_type, fix_type, original, proposed=None, fixes=None, decision=None):
+    """Append a structured log entry. decision is set for verbatim entries
+    (noop or ask)."""
     FIXUPS_LOG.parent.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
     entry = {
@@ -134,6 +136,8 @@ def _log_entry(entry_type, fix_type, original, proposed=None, fixes=None):
         entry["proposed"] = proposed
     if fixes is not None:
         entry["fixes"] = fixes
+    if decision is not None:
+        entry["decision"] = decision
     with open(FIXUPS_LOG, "a", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(entry) + "\n")
     _trim_log_if_needed()
@@ -1073,6 +1077,27 @@ def fix_wsl_paths(cmd):
     )
 
 
+_RESERVED_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(sorted(WINDOWS_RESERVED_NAMES)) + r")\b", re.IGNORECASE)
+
+
+def _reserved_stem(target):
+    """The reserved device name a redirect target or file name uses, or None.
+    con, con.txt and dir/con.log all use 'con'."""
+    base = target.strip("\"'").replace("\\", "/").rsplit("/", 1)[-1]
+    stem = base.split(".", 1)[0].lower()
+    return stem if stem in WINDOWS_RESERVED_NAMES else None
+
+
+def _real_nul_redirect(cmd):
+    """True if cmd redirects output to nul (a file named nul in Git Bash),
+    as opposed to mentioning '> nul' inside text."""
+    if "nul" not in cmd.lower():
+        return False
+    return any(">" in cmd[op0:op1] and _reserved_stem(cmd[t0:t1]) == "nul"
+               for op0, op1, t0, t1 in parse_command(cmd).redirects)
+
+
 def check_reserved_names(cmd):
     """Block redirects to Windows reserved device names (other than NUL).
 
@@ -1083,10 +1108,16 @@ def check_reserved_names(cmd):
     """
     # Check redirects: > con, 2> prn, &> aux, > lpt1.txt, etc.
     m = _RESERVED_RE.search(cmd)
-    if m:
-        name = m.group(2).lower()
-        if name != "nul":  # nul is auto-fixed in tier 1
-            block(f"'{m.group(2)}' is a Windows reserved device name. "
+    names = [m.group(2)] if m else []
+    # The regex needs the name at the end of a line, so "> con  # note" got
+    # past it. The parser's redirect list sees every real redirect (#57).
+    if _RESERVED_WORD_RE.search(cmd):
+        for op0, op1, t0, t1 in parse_command(cmd).redirects:
+            if ">" in cmd[op0:op1] and _reserved_stem(cmd[t0:t1]):
+                names.append(cmd[t0:t1].strip("\"'"))
+    for name in names:
+        if _reserved_stem(name) != "nul":  # nul is auto-fixed in tier 1
+            block(f"'{name}' is a Windows reserved device name. "
                   f"Redirecting to it will either send output to a hardware "
                   f"device or create an undeletable file.\n"
                   f"Use > /dev/null to discard output.",
@@ -1559,6 +1590,133 @@ def fix_cmd_cd(cmd):
 # Main
 # ---------------------------------------------------------------------------
 
+# Blocking checks, in order: (check id, function, default when not configured)
+_CHECKS = [
+    ("git_commit_attribution", check_git_commit_attribution, False),
+    ("git_commit_generated", check_git_commit_generated, False),
+    ("git_commit_emoji", check_git_commit_emoji, False),
+    ("powershell_legacy", check_powershell_legacy, None),
+    ("wsl_invocation", check_wsl_invocation, None),
+    ("dir_in_pwsh", check_dir_in_pwsh, None),
+    ("reserved_names", check_reserved_names, None),
+    ("unc_paths", check_unc_paths, None),
+]
+
+# Auto-fixes, in order: each feeds its output to the next (see CLAUDE.md for
+# order dependencies, e.g. doubled_flags before cmd_cd).
+_FIXES = [
+    ("doubled_flags", fix_doubled_flags, "replaced doubled // flags with single /"),
+    ("nul_redirect", fix_nul_redirect, "replaced > nul with > /dev/null"),
+    ("windows_env_vars", fix_windows_env_vars, "replaced Windows env vars with bash-safe equivalents"),
+    ("backslash_paths", fix_backslash_paths, "converted backslash paths to forward slashes"),
+    ("msys2_drive_paths", fix_msys2_drive_paths, "converted MSYS2 drive paths to Windows style"),
+    ("wsl_paths", fix_wsl_paths, "converted /mnt/ WSL paths to Windows style"),
+    ("python3", fix_python3, "replaced python3 with python"),
+    ("dir_windows_flags", fix_dir_windows_flags, "converted Windows dir /flags to ls equivalent"),
+    ("bare_pwsh_cmdlet", fix_bare_pwsh_cmdlet, "wrapped bare PowerShell cmdlet with pwsh -NoProfile -Command"),
+    ("pwsh_noprofile", fix_pwsh_noprofile, "inserted -NoProfile into pwsh invocation"),
+    ("pwsh_quoting", fix_pwsh_quoting, "swapped pwsh -Command quotes from double to single"),
+    ("start_command", fix_start_command, "replaced start with os.startfile()"),
+    ("cmd_cd", fix_cmd_cd, "injected cd into cmd /c for correct working directory"),
+]
+
+VERBATIM_HINT = ("If a rewrite was wrong, run the command again with a trailing "
+                 "`# hook:verbatim` comment; the user will be asked to confirm.")
+MAX_VERBATIM_EXCERPTS = 5
+
+
+def _run_checks(command):
+    for check_id, fn, default in _CHECKS:
+        if _is_enabled(check_id, default=default):
+            fn(command)
+
+
+def _run_fixes(command):
+    """Apply the enabled fixes in order.
+
+    Returns (command, steps, error): steps is a list of
+    (check_id, description, before, after) for each fix that changed the
+    command; error is (check_id, message) when a fix refuses to rewrite and
+    the command must be blocked (fix_pwsh_quoting), else None.
+    """
+    steps = []
+    for check_id, fn, description in _FIXES:
+        if not _is_enabled(check_id):
+            continue
+        before = command
+        if fn is fix_pwsh_quoting:
+            command, err = fn(command)
+            if err:
+                return command, steps, (check_id, err)
+        else:
+            command = fn(command)
+        if command != before:
+            steps.append((check_id, description, before, command))
+    return command, steps, None
+
+
+def _excerpt(text, start, end, limit=60):
+    """The words of text around [start, end), on one line, cut to limit."""
+    while start > 0 and not text[start - 1].isspace():
+        start -= 1
+    while end < len(text) and not text[end].isspace():
+        end += 1
+    s = text[start:end].replace("\n", "\\n")
+    return s if len(s) <= limit else s[:limit - 3] + "..."
+
+
+def _rewrite_excerpts(before, after):
+    """Distinct 'old -> new' excerpts for the changes between two commands."""
+    seen = []
+    sm = difflib.SequenceMatcher(None, before, after, autojunk=False)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op == "equal":
+            continue
+        pair = f"{_excerpt(before, i1, i2)} -> {_excerpt(after, j1, j2)}"
+        if pair not in seen:
+            seen.append(pair)
+    return seen
+
+
+def _handle_verbatim(command):
+    """The command carries a top-level # hook:verbatim comment: run it as
+    written, but only with the user's approval when that skips a fix (#57).
+    Blocking checks have already run. Always exits."""
+    if _is_enabled("nul_redirect") and _real_nul_redirect(command):
+        block("'> nul' creates a file named nul in Git Bash that Windows cannot "
+              "delete; # hook:verbatim does not override this. "
+              "Use > /dev/null to discard output.",
+              "nul_redirect", command)
+
+    fixed, steps, error = _run_fixes(command)
+    items = []
+    for _, description, before, after in steps:
+        items += [f"{description}: {pair}" for pair in _rewrite_excerpts(before, after)]
+    shown = items[:MAX_VERBATIM_EXCERPTS]
+    if len(items) > len(shown):
+        shown.append(f"and {len(items) - len(shown)} more")
+    if error:
+        shown.append(f"pwsh -Command quoting check: {error[1]}")
+
+    fix_ids = [s[0] for s in steps] + ([error[0]] if error else [])
+    if not fix_ids:
+        _log_entry("verbatim", "none", command, decision="noop")
+        sys.exit(0)
+
+    _log_entry("verbatim", ",".join(fix_ids), command,
+               proposed=fixed if steps else None, decision="ask")
+    reason = ("# hook:verbatim: run this command exactly as written? Without the "
+              "marker the hook would change it: " + "; ".join(shown) + ". "
+              "If this is not confirmed, the command does not run; drop the "
+              "marker to accept the rewrite instead.")
+    json.dump({"hookSpecificOutput": {
+        "hookEventName": "PreToolUse",
+        "permissionDecision": "ask",
+        "permissionDecisionReason": reason,
+    }}, sys.stdout)
+    sys.exit(0)
+
+
 def main():
     input_data = read_hook_input()
 
@@ -1567,131 +1725,33 @@ def main():
     if not command:
         sys.exit(0)
 
-    original = command
-    fixes = []
+    _run_checks(command)
 
-    # -- Tier 2 checks (blocking) ------------------------------------------
-    if _is_enabled("git_commit_attribution", default=False):
-        check_git_commit_attribution(command)
-    if _is_enabled("git_commit_generated", default=False):
-        check_git_commit_generated(command)
-    if _is_enabled("git_commit_emoji", default=False):
-        check_git_commit_emoji(command)
-    if _is_enabled("powershell_legacy"):
-        check_powershell_legacy(command)
-    if _is_enabled("wsl_invocation"):
-        check_wsl_invocation(command)
-    if _is_enabled("dir_in_pwsh"):
-        check_dir_in_pwsh(command)
-    if _is_enabled("reserved_names"):
-        check_reserved_names(command)
-    if _is_enabled("unc_paths"):
-        check_unc_paths(command)
+    if "hook:verbatim" in command and parse_command(command).verbatim:
+        _handle_verbatim(command)
 
-    # -- Tier 1 auto-fixes --------------------------------------------------
+    fixed, steps, error = _run_fixes(command)
+    if error:
+        block(error[1], error[0], fixed)
 
-    if _is_enabled("doubled_flags"):
-        prev = command
-        command = fix_doubled_flags(command)
-        if command != prev:
-            fixes.append("replaced doubled // flags with single /")
-
-    if _is_enabled("nul_redirect"):
-        prev = command
-        command = fix_nul_redirect(command)
-        if command != prev:
-            fixes.append("replaced > nul with > /dev/null")
-
-    if _is_enabled("windows_env_vars"):
-        prev = command
-        command = fix_windows_env_vars(command)
-        if command != prev:
-            fixes.append("replaced Windows env vars with bash-safe equivalents")
-
-    if _is_enabled("backslash_paths"):
-        prev = command
-        command = fix_backslash_paths(command)
-        if command != prev:
-            fixes.append("converted backslash paths to forward slashes")
-
-    if _is_enabled("msys2_drive_paths"):
-        prev = command
-        command = fix_msys2_drive_paths(command)
-        if command != prev:
-            fixes.append("converted MSYS2 drive paths to Windows style")
-
-    if _is_enabled("wsl_paths"):
-        prev = command
-        command = fix_wsl_paths(command)
-        if command != prev:
-            fixes.append("converted /mnt/ WSL paths to Windows style")
-
-    if _is_enabled("python3"):
-        prev = command
-        command = fix_python3(command)
-        if command != prev:
-            fixes.append("replaced python3 with python")
-
-    if _is_enabled("dir_windows_flags"):
-        prev = command
-        command = fix_dir_windows_flags(command)
-        if command != prev:
-            fixes.append("converted Windows dir /flags to ls equivalent")
-
-    if _is_enabled("bare_pwsh_cmdlet"):
-        prev = command
-        command = fix_bare_pwsh_cmdlet(command)
-        if command != prev:
-            fixes.append("wrapped bare PowerShell cmdlet with pwsh -NoProfile -Command")
-
-    if _is_enabled("pwsh_noprofile"):
-        prev = command
-        command = fix_pwsh_noprofile(command)
-        if command != prev:
-            fixes.append("inserted -NoProfile into pwsh invocation")
-
-    if _is_enabled("pwsh_quoting"):
-        prev = command
-        command, pwsh_err = fix_pwsh_quoting(command)
-        if pwsh_err:
-            block(pwsh_err, "pwsh_quoting", command)
-        if command != prev:
-            fixes.append("swapped pwsh -Command quotes from double to single")
-
-    if _is_enabled("start_command"):
-        prev = command
-        command = fix_start_command(command)
-        if command != prev:
-            fixes.append("replaced start with os.startfile()")
-
-    if _is_enabled("cmd_cd"):
-        prev = command
-        command = fix_cmd_cd(command)
-        if command != prev:
-            fixes.append("injected cd into cmd /c for correct working directory")
-
-    # -- Emit result --------------------------------------------------------
-    if fixes:
-        log_autofix(original, command, fixes)
+    if steps:
+        fixes = [description for _, description, _, _ in steps]
+        log_autofix(command, fixed, fixes)
         # updatedInput replaces the whole tool input: pass every field through
         # (timeout, run_in_background, description) and change only the command.
         updated = dict(tool_input)
-        updated["command"] = command
+        updated["command"] = fixed
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "updatedInput": updated,
                 "additionalContext": "Hook auto-fixed: " + ", ".join(fixes)
-                    + (". If a tool fails because it needs literal backslash "
-                       "paths, single-quote those arguments to bypass the fix."
-                       if "converted backslash paths to forward slashes" in fixes
-                       else ""),
+                    + ". " + VERBATIM_HINT,
             }
         }
         json.dump(output, sys.stdout)
 
     sys.exit(0)
-
 
 if __name__ == "__main__":
     main()
