@@ -11,13 +11,13 @@
   "_comment_unc_paths": "Block: \\\\server\\share -> suggest //server/share",
   "unc_paths": true,
 
-  "_comment_wsl_paths": "Block: /mnt/c/Users/... -> suggest C:/Users/... (WSL paths, not Git Bash)",
+  "_comment_wsl_paths": "Auto-fix: /mnt/c/Users/... -> C:/Users/... in Git Bash (left alone when the command invokes wsl)",
   "wsl_paths": true,
 
   "_comment_reserved_names": "Block: > con, touch prn.txt (Windows reserved device names)",
   "reserved_names": true,
 
-  "_comment_python3": "Auto-fix: python3 -> python (python3 is a Windows Store alias)",
+  "_comment_python3": "Auto-fix: python3 -> python when python3 is missing or only the Microsoft Store stub",
   "python3": true,
 
   "_comment_dir_windows_flags": "Auto-fix: dir /b -> ls -1, dir /s -> ls -R (dir in Git Bash is GNU coreutils)",
@@ -35,7 +35,7 @@
   "_comment_powershell_legacy": "Block: powershell.exe -> suggest pwsh (full path allowed for PS 5.1)",
   "powershell_legacy": true,
 
-  "_comment_wsl_invocation": "Block: wsl ls -> run ls directly (you're in Git Bash, not WSL)",
+  "_comment_wsl_invocation": "Block: wsl ... when WSL is not installed (allowed when it is)",
   "wsl_invocation": true,
 
   "_comment_bare_pwsh_cmdlet": "Auto-fix: Get-ChildItem -> pwsh -NoProfile -Command 'Get-ChildItem' (wrap bare PS cmdlets)",

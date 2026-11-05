@@ -6,17 +6,17 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 
 | Fix | Trigger | Tier | Action |
 |-----|---------|------|--------|
-| Null redirect | `> nul`, `2> nul` | Auto-fix | Rewrite to `> /dev/null` |
-| Python3 alias | `python3 ...` | Auto-fix | Rewrite to `python` |
+| Null redirect | `> nul`, `2> nul` | Auto-fix | Rewrite to `> /dev/null` (not inside heredoc bodies, e.g. a `.bat` file being written) |
+| Python3 alias | `python3 ...` | Auto-fix | Rewrite to `python` only when `python3` is not a real interpreter on this machine (missing, or the Microsoft Store stub); not inside wsl/ssh/adb shell arguments or heredoc bodies |
 | PowerShell quoting | `pwsh -Command "$..."` | Auto-fix | Swap to single quotes |
-| MSYS2 drive paths | `/c/Work/...` | Auto-fix | Rewrite to `C:/Work/...` |
+| MSYS2 drive paths | `/c/Work/...` | Auto-fix | Rewrite to `C:/Work/...`; not inside wsl/ssh/adb shell arguments |
 | Reserved names | `> con`, `> prn`, `touch aux.txt` | Block | Reject -- undeletable files |
 | Commit messages | Co-Authored-By, emoji, "Generated with" | Block | Reject with message |
 | Doubled flags | `tasklist //fi` | Auto-fix | Rewrite to single `/` |
 | Backslash paths | `C:\Users\...` | Auto-fix | Rewrite to `C:/Users/...` |
 | UNC paths | `\\server\share\...` | Block | Suggest `//server/share/...` |
-| WSL invocation | `wsl ls`, `wsl.exe cat` | Block | Reject -- you're in Git Bash, not WSL; full path allowed |
-| WSL mount paths | `/mnt/c/Users/...` | Block | Suggest `C:/Users/...` |
+| WSL invocation | `wsl ls`, `wsl.exe cat` | Block | Only when WSL is not installed; allowed when it is |
+| WSL mount paths | `/mnt/c/Users/...` | Auto-fix | Rewrite to `C:/Users/...` in Git Bash; left alone when the command invokes wsl, inside ssh/adb shell arguments and heredoc bodies |
 | Legacy PowerShell | `powershell.exe ...` | Block | Suggest `pwsh`; use full path to opt in to PS 5.1 |
 | `dir /b` in bash | `dir /b path` | Auto-fix | Rewrite to `ls -1 path` |
 | Bare PS cmdlet | `Get-ChildItem C:/Users` | Auto-fix | Wrap with `pwsh -NoProfile -Command '...'` |
@@ -72,7 +72,7 @@ Copy `hooks/*.py` to `~/.claude/hooks/` and add to `~/.claude/settings.json`:
 
 ## Reviewing the fixups log
 
-Both auto-fixes and tier-2 suggestions are logged. The log lives next to the hook script, so each install gets its own:
+Every auto-fix and every block is logged. The log lives next to the hook script, so each install gets its own:
 
 - **Global install**: `~/.claude/hooks/fixups.log`
 - **Project install**: `<project>/.claude/hooks/fixups.log`
@@ -87,12 +87,12 @@ Each line is a JSON object with:
 |-------|-------------|
 | `time` | Human-readable timestamp (`2026-02-18 13:15:51`) |
 | `type` | `autofix` (tier 1, silently applied) or `suggest` (tier 2, blocked) |
-| `fix` | What was fixed or suggested |
+| `fix` | What was fixed, or the check ID that blocked |
 | `cwd` | Working directory (identifies the project) |
 | `original` | The original command |
 | `proposed` | The fixed/suggested command |
 
-The log auto-trims to 250 lines when it exceeds 500, so it won't grow unbounded.
+When the log exceeds 5 MB it is trimmed to the newest 2.5 MB (several weeks of typical use), so it won't grow unbounded.
 
 ## Updating
 
@@ -122,7 +122,7 @@ Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true
 |----------|-------------|---------|------|
 | `nul_redirect` | Rewrite `> nul` to `> /dev/null` | on | auto-fix |
 | `msys2_drive_paths` | Rewrite `/c/...` to `C:/...` | on | auto-fix |
-| `python3` | Rewrite `python3` to `python` | on | auto-fix |
+| `python3` | Rewrite `python3` to `python` when `python3` is not a real interpreter | on | auto-fix |
 | `dir_windows_flags` | Rewrite `dir /b` to `ls -1` | on | auto-fix |
 | `pwsh_quoting` | Fix pwsh double-quote to single-quote | on | auto-fix |
 | `doubled_flags` | Rewrite `//flag` to `/flag` | on | auto-fix |
@@ -132,12 +132,12 @@ Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true
 | `windows_env_vars` | Rewrite `$USERPROFILE` / `$APPDATA` / `$LOCALAPPDATA` to `$HOME` equivalents | on | auto-fix |
 | `cmd_cd` | Inject `cd /d` into `cmd /c` for correct CWD | on | auto-fix |
 | `start_command` | Rewrite `start` to `python os.startfile()` | on | auto-fix |
+| `wsl_paths` | Rewrite `/mnt/c/` WSL-style paths to `C:/` in Git Bash | on | auto-fix |
 | `unc_paths` | Block `\\server` UNC paths | on | block |
-| `wsl_paths` | Block `/mnt/c/` WSL-style paths | on | block |
 | `reserved_names` | Block redirects to CON, PRN, etc. | on | block |
 | `dir_in_pwsh` | Block `dir /flag` inside pwsh | on | block |
 | `powershell_legacy` | Block `powershell.exe`, suggest pwsh | on | block |
-| `wsl_invocation` | Block bare `wsl` commands | on | block |
+| `wsl_invocation` | Block `wsl` commands when WSL is not installed | on | block |
 | `git_commit_attribution` | Block Co-Authored-By in commits | off | block |
 | `git_commit_generated` | Block "Generated with" in commits | off | block |
 | `git_commit_emoji` | Block emoji in commit messages | off | block |

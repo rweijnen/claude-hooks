@@ -6,12 +6,13 @@ Git Bash / MSYS2 mistakes on Windows.
 
 Tier 1 (auto-fix): silently rewrites the command via updatedInput.
 Tier 2 (suggest):  blocks with exit 2 and a message showing the proposed fix.
-                   Logs to ~/.claude/hooks/fixups.log for review.
+Both tiers log to fixups.log next to this script for review.
 """
 
 import json
 import os
 import re
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -94,21 +95,25 @@ def _is_enabled(check_id, default=None):
         return default
     return _DEFAULTS.get(check_id, True)
 
-MAX_LOG_LINES = 500
-TRIM_TO_LINES = 250
+# Size-based so the common path is a single stat(); the file is only read
+# when it actually needs trimming. Entries average ~1 KB (full commands),
+# so this keeps several weeks of history.
+MAX_LOG_BYTES = 5_000_000
+TRIM_TO_BYTES = 2_500_000
 
 
 def _trim_log_if_needed():
-    """Keep the log file bounded. When it exceeds MAX_LOG_LINES, trim to TRIM_TO_LINES."""
-    try:
-        lines = FIXUPS_LOG.read_text(encoding="utf-8").splitlines()
-    except OSError:
+    """Keep the log bounded: past MAX_LOG_BYTES, keep the newest ~TRIM_TO_BYTES."""
+    if FIXUPS_LOG.stat().st_size <= MAX_LOG_BYTES:
         return
-    if len(lines) > MAX_LOG_LINES:
-        FIXUPS_LOG.write_text(
-            "\n".join(lines[-TRIM_TO_LINES:]) + "\n",
-            encoding="utf-8",
-        )
+    lines = FIXUPS_LOG.read_text(encoding="utf-8").splitlines()
+    kept, size = [], 0
+    for line in reversed(lines):
+        size += len(line.encode("utf-8")) + 1
+        if size > TRIM_TO_BYTES:
+            break
+        kept.append(line)
+    FIXUPS_LOG.write_text("\n".join(reversed(kept)) + "\n", encoding="utf-8", newline="\n")
 
 
 def _log_entry(entry_type, fix_type, original, proposed=None, fixes=None):
@@ -126,14 +131,9 @@ def _log_entry(entry_type, fix_type, original, proposed=None, fixes=None):
         entry["proposed"] = proposed
     if fixes is not None:
         entry["fixes"] = fixes
-    with open(FIXUPS_LOG, "a", encoding="utf-8") as f:
+    with open(FIXUPS_LOG, "a", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(entry) + "\n")
     _trim_log_if_needed()
-
-
-def log_fixup(original, proposed, fix_type):
-    """Log a tier-2 suggestion (blocked, not auto-fixed)."""
-    _log_entry("suggest", fix_type, original, proposed=proposed)
 
 
 def log_autofix(original, fixed, fixes):
@@ -141,10 +141,31 @@ def log_autofix(original, fixed, fixes):
     _log_entry("autofix", ",".join(fixes), original, proposed=fixed, fixes=fixes)
 
 
-def block(message):
-    """Print a message to stderr and exit with code 2 (deny)."""
-    print(message, file=sys.stderr)
+def _write_stderr(message):
+    """Write UTF-8 to stderr regardless of the console code page."""
+    sys.stderr.buffer.write((message + "\n").encode("utf-8"))
+    sys.stderr.buffer.flush()
+
+
+def block(message, check_id, cmd, proposed=None):
+    """Log the block, print the message to stderr and exit 2 (deny)."""
+    _log_entry("suggest", check_id, cmd, proposed=proposed)
+    _write_stderr(message)
     sys.exit(2)
+
+
+def read_hook_input():
+    """Parse the hook's JSON input. Claude Code sends UTF-8.
+
+    sys.stdin would decode with the Windows code page (cp1252) and turn
+    every non-ASCII character into mojibake, so decode the bytes directly.
+    """
+    raw = sys.stdin.buffer.read()
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        _write_stderr(f"fix_bash_command: hook input is not valid UTF-8 JSON: {e}")
+        sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +229,8 @@ def check_git_commit_attribution(cmd):
         return
     if re.search(r"co-authored-by", cmd, re.IGNORECASE):
         block("Commit message contains Co-Authored-By. "
-              "Remove AI attribution from commit messages.")
+              "Remove AI attribution from commit messages.",
+              "git_commit_attribution", cmd)
 
 
 def check_git_commit_generated(cmd):
@@ -217,7 +239,8 @@ def check_git_commit_generated(cmd):
         return
     if re.search(r"generated with", cmd, re.IGNORECASE):
         block("Commit message contains 'Generated with'. "
-              "Remove AI attribution from commit messages.")
+              "Remove AI attribution from commit messages.",
+              "git_commit_generated", cmd)
 
 
 def check_git_commit_emoji(cmd):
@@ -226,7 +249,8 @@ def check_git_commit_emoji(cmd):
         return
     if EMOJI_RE.search(cmd):
         block("Commit message contains emoji. "
-              "Use plain text in commit messages.")
+              "Use plain text in commit messages.",
+              "git_commit_emoji", cmd)
 
 
 def fix_doubled_flags(cmd):
@@ -285,6 +309,86 @@ def _in_heredoc(cmd, pos):
         if body_start <= pos < body_end:
             return True
     return False
+
+
+# A command whose arguments run on another system (Linux via WSL, a remote
+# host via ssh, an Android device via adb shell). Matched at the start of a
+# word, optionally with a path prefix (C:/Windows/System32/wsl.exe).
+_FOREIGN_CMD_RE = re.compile(
+    r"(?:[^\s'\";&|]*[/\\])?(?:wsl|ssh|plink)(?:\.exe)?\s"
+    r"|adb(?:\.exe)?(?:\s+-[de]|\s+-s\s+\S+)*\s+shell\b",
+    re.IGNORECASE,
+)
+# Same, but the program path is quoted: "C:\...\OpenSSH\ssh.exe" host ...
+_QUOTED_FOREIGN_CMD_RE = re.compile(
+    r"\"[^\"]*[/\\](?:wsl|ssh|plink)(?:\.exe)?\"\s",
+    re.IGNORECASE,
+)
+_SEGMENT_SEPARATORS = ";&|\n"
+_WSL_ANYWHERE_RE = re.compile(r"(?:^|[\s/\\\"'(;&|])wsl(?:\.exe)?\"?\s", re.IGNORECASE)
+
+
+def _shell_spans(cmd):
+    """Return (heredoc_spans, foreign_spans) as lists of (start, end).
+
+    heredoc_spans are heredoc bodies. foreign_spans cover the arguments of
+    a wsl/ssh/plink/adb-shell command up to the end of that simple command
+    (the next unquoted ; & | or newline), plus any heredoc body fed to it.
+    Quote state is tracked so separators inside quotes do not end a span,
+    and heredoc bodies are skipped so their apostrophes do not confuse it.
+    """
+    heredocs = [(m.start(2), m.end(2)) for m in _HEREDOC_RE.finditer(cmd)]
+    body_at = {start: end for start, end in heredocs}
+    foreign = []
+    fstart = None
+    quote = None
+    word_start = True
+    i = 0
+    n = len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if quote:
+            if ch == "\\" and quote == '"':
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\":
+            i += 2
+            word_start = False
+            continue
+        if ch in _SEGMENT_SEPARATORS:
+            body_end = body_at.get(i + 1) if ch == "\n" else None
+            if fstart is not None:
+                foreign.append((fstart, body_end if body_end else i))
+                fstart = None
+            i = body_end if body_end else i + 1
+            word_start = True
+            continue
+        if word_start and fstart is None:
+            m = _FOREIGN_CMD_RE.match(cmd, i) or _QUOTED_FOREIGN_CMD_RE.match(cmd, i)
+            if m:
+                fstart = m.end()
+                i = m.end()
+                continue
+        if ch in "'\"":
+            quote = ch
+        word_start = ch.isspace() or ch == "("
+        i += 1
+    if fstart is not None:
+        foreign.append((fstart, n))
+    return heredocs, foreign
+
+
+def _sub_outside(pattern, repl, cmd, spans, flags=0):
+    """re.sub that leaves matches starting inside any of spans untouched."""
+    def replace(m):
+        if any(a <= m.start() < b for a, b in spans):
+            return m.group(0)
+        return repl(m) if callable(repl) else m.expand(repl)
+    return re.sub(pattern, replace, cmd, flags=flags)
 
 
 def fix_backslash_paths(cmd):
@@ -346,53 +450,48 @@ def check_unc_paths(cmd):
             lambda m: "//" + m.group(1) + "/" + m.group(2).replace("\\", "/"),
             cmd,
         )
-        log_fixup(cmd, proposed, "unc_path")
         block(f"UNC paths with backslashes don't work in Git Bash.\n"
               f"Original:  {cmd}\n"
-              f"Suggested: {proposed}")
+              f"Suggested: {proposed}",
+              "unc_paths", cmd, proposed)
 
 
 def check_wsl_invocation(cmd):
-    """Block bare 'wsl' commands -- Claude is in Git Bash, not WSL."""
+    """Block 'wsl' commands when WSL is not installed.
+
+    When WSL is installed, a wsl invocation is deliberate: transcript
+    review showed every blocked call was genuine WSL work (Linux builds,
+    Linux-only tools), so it is allowed.
+    """
     if not re.match(r"wsl(\.exe)?\s", cmd.lstrip(), re.IGNORECASE):
         return
-    # Allow full-path invocations as an intentional escape hatch
-    stripped = cmd.lstrip()
-    if re.match(r"[A-Za-z]:/", stripped):
-        return
     if _is_wsl_installed():
-        block(
-            "You are running in Git Bash on native Windows, not inside WSL.\n"
-            "Run the command directly instead of prefixing it with wsl.\n"
-            "If you specifically need to run a command inside WSL, "
-            "use the full path: C:/Windows/System32/wsl.exe"
-        )
-    else:
-        block(
-            "WSL is not installed. You are running in Git Bash on native Windows.\n"
-            "Run the command directly instead of prefixing it with wsl."
-        )
+        return
+    block(
+        "WSL is not installed. You are running in Git Bash on native Windows.\n"
+        "Run the command directly instead of prefixing it with wsl.",
+        "wsl_invocation", cmd,
+    )
 
 
-def check_wsl_paths(cmd):
-    """Block /mnt/c/ style paths -- these are WSL paths, not Git Bash paths."""
-    if _in_wsl:
-        return
-    stripped = _strip_heredocs(cmd)
-    m = re.search(r"/mnt/([a-zA-Z])/", stripped)
-    if not m:
-        return
-    proposed = re.sub(
+def fix_wsl_paths(cmd):
+    """Fix P: /mnt/c/... -> C:/... in commands run by Git Bash.
+
+    Git Bash has no /mnt, so a WSL mount path used locally always fails.
+    Paths inside the arguments of ssh/adb shell (which run on Linux) and
+    heredoc bodies (file content) are left alone. If the command invokes
+    wsl anywhere, nothing is rewritten: /mnt paths there are typically set
+    in local variables (S='/mnt/c/...'; wsl -e bash -c "... $S") that
+    are expanded into the WSL command.
+    """
+    if _in_wsl or _WSL_ANYWHERE_RE.search(cmd):
+        return cmd
+    heredocs, foreign = _shell_spans(cmd)
+    return _sub_outside(
         r"/mnt/([a-zA-Z])/",
         lambda m: m.group(1).upper() + ":/",
         cmd,
-    )
-    log_fixup(cmd, proposed, "wsl_path")
-    block(
-        f"/mnt/{m.group(1)}/ is a WSL mount path. "
-        f"You are in Git Bash on native Windows.\n"
-        f"Original:  {cmd}\n"
-        f"Suggested: {proposed}"
+        heredocs + foreign,
     )
 
 
@@ -409,11 +508,11 @@ def check_reserved_names(cmd):
     if m:
         name = m.group(2).lower()
         if name != "nul":  # nul is auto-fixed in tier 1
-            log_fixup(cmd, None, "reserved_name_redirect")
             block(f"'{m.group(2)}' is a Windows reserved device name. "
                   f"Redirecting to it will either send output to a hardware "
                   f"device or create an undeletable file.\n"
-                  f"Use > /dev/null to discard output.")
+                  f"Use > /dev/null to discard output.",
+                  "reserved_names", cmd)
 
     # Check file arguments: touch con, mkdir prn, etc.
     # Look for reserved names as bare arguments after file-creating commands
@@ -425,10 +524,10 @@ def check_reserved_names(cmd):
         # Strip extension: con.txt -> con
         stem = basename.split(".", 1)[0].lower()
         if stem in WINDOWS_RESERVED_NAMES:
-            log_fixup(cmd, None, "reserved_name_file")
             block(f"'{basename}' uses Windows reserved name '{stem}'. "
                   f"This will create an undeletable file on Windows. "
-                  f"Choose a different filename.")
+                  f"Choose a different filename.",
+                  "reserved_names", cmd)
 
 
 def check_powershell_legacy(cmd):
@@ -445,7 +544,8 @@ def check_powershell_legacy(cmd):
             "powershell.exe invokes the legacy Windows PowerShell 5.1.\n"
             "If you specifically need PowerShell 5.1 for legacy compatibility, "
             "use the full path: "
-            "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+            "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+            "powershell_legacy", cmd,
         )
 
 
@@ -468,11 +568,11 @@ def check_dir_in_pwsh(cmd):
         "/a": "Get-ChildItem path -Force",
     }
     suggestion = suggestions.get(flag, "Get-ChildItem path")
-    log_fixup(cmd, None, "dir_in_pwsh")
     block(
         f"'dir {flag}' is a cmd.exe flag; PowerShell's dir (Get-ChildItem) "
         f"does not accept it and will treat it as a path.\n"
-        f"Use: {suggestion}"
+        f"Use: {suggestion}",
+        "dir_in_pwsh", cmd,
     )
 
 
@@ -481,11 +581,17 @@ def check_dir_in_pwsh(cmd):
 # ---------------------------------------------------------------------------
 
 def fix_nul_redirect(cmd):
-    """Fix A: > nul -> > /dev/null (case-insensitive: NUL, Nul, nul)"""
-    return re.sub(
+    """Fix A: > nul -> > /dev/null (case-insensitive: NUL, Nul, nul)
+
+    Heredoc bodies are file content (e.g. a .bat file, where nul is
+    correct) and are left alone.
+    """
+    heredocs, _ = _shell_spans(cmd)
+    return _sub_outside(
         r"(?<!/dev/)((?:&|[012])?>)\s*nul\b",
         r"\1 /dev/null",
         cmd,
+        heredocs,
         flags=re.IGNORECASE,
     )
 
@@ -530,32 +636,54 @@ def fix_msys2_drive_paths(cmd):
     MSYS2 drive mount paths (/c/, /d/, etc.) sometimes fail to convert
     when passed to Windows executables like python.exe. Using C:/ style
     is always safe for both MSYS2 tools and Windows executables.
+    (Claude Code sets MSYS2_ARG_CONV_EXCL=*, so Windows executables get
+    /c/... literally.)
+
+    Paths in the arguments of wsl/ssh/adb shell belong to the other system
+    and are left alone. Heredoc bodies are still rewritten: a Python
+    heredoc needs C:/ paths just like the command line does.
     """
-    return re.sub(
+    _, foreign = _shell_spans(cmd)
+    return _sub_outside(
         r"(?:^|(?<=\s))/([a-zA-Z])/",
         lambda m: m.group(1).upper() + ":/",
         cmd,
+        foreign,
     )
 
 
-_SSH_CLIENT_RE = re.compile(
-    r'(?:^|")\s*(?:[A-Za-z]:[/\\][^"]*\\)?(?:ssh|plink(?:\.exe)?)\s',
-    re.IGNORECASE,
-)
+def _python3_is_genuine():
+    """True if python3 on PATH is a real interpreter, not the Store stub.
+
+    Without a python.org install's python3, Windows provides an App
+    Execution Alias in %LOCALAPPDATA%/Microsoft/WindowsApps that only
+    opens the Microsoft Store. The same folder holds the alias of a real
+    Store-installed Python, in which case a PythonSoftwareFoundation
+    package folder exists next to it.
+    """
+    found = shutil.which("python3")
+    if found is None:
+        return False
+    parent = Path(found).parent
+    if parent.name.lower() == "windowsapps" and parent.parent.name.lower() == "microsoft":
+        return any(parent.glob("PythonSoftwareFoundation.Python.3*"))
+    return True
 
 
 def fix_python3(cmd):
-    """Fix B: python3 -> python (Windows Store alias, not real Python).
+    """Fix B: python3 -> python when python3 is not a real interpreter here.
 
-    Skips SSH/plink commands: the remote host may legitimately need python3,
-    and we cannot distinguish the local command from the quoted remote payload.
+    Leaves python3 alone in the arguments of wsl/ssh/adb shell (the other
+    system may need python3) and in heredoc bodies (file content such as
+    a #!/usr/bin/env python3 shebang).
 
     Also avoids corrupting version-specific paths like /usr/bin/python3.9 by
     requiring that python3 is not followed by a digit or dot.
     """
-    if _SSH_CLIENT_RE.search(cmd):
+    if "python3" not in cmd or _python3_is_genuine():
         return cmd
-    return re.sub(r"\bpython3(?![\d.])", "python", cmd)
+    heredocs, foreign = _shell_spans(cmd)
+    return _sub_outside(r"\bpython3(?![\d.])", "python", cmd, heredocs + foreign)
 
 
 # Mapping of Windows cmd.exe 'dir' flags to GNU 'ls' equivalents
@@ -847,10 +975,7 @@ def fix_cmd_cd(cmd):
 # ---------------------------------------------------------------------------
 
 def main():
-    try:
-        input_data = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
-        sys.exit(0)
+    input_data = read_hook_input()
 
     tool_input = input_data.get("tool_input", {})
     command = tool_input.get("command", "")
@@ -871,8 +996,6 @@ def main():
         check_powershell_legacy(command)
     if _is_enabled("wsl_invocation"):
         check_wsl_invocation(command)
-    if _is_enabled("wsl_paths"):
-        check_wsl_paths(command)
     if _is_enabled("dir_in_pwsh"):
         check_dir_in_pwsh(command)
     if _is_enabled("reserved_names"):
@@ -889,8 +1012,9 @@ def main():
             fixes.append("replaced doubled // flags with single /")
 
     if _is_enabled("nul_redirect"):
+        prev = command
         command = fix_nul_redirect(command)
-        if command != original:
+        if command != prev:
             fixes.append("replaced > nul with > /dev/null")
 
     if _is_enabled("windows_env_vars"):
@@ -910,6 +1034,12 @@ def main():
         command = fix_msys2_drive_paths(command)
         if command != prev:
             fixes.append("converted MSYS2 drive paths to Windows style")
+
+    if _is_enabled("wsl_paths"):
+        prev = command
+        command = fix_wsl_paths(command)
+        if command != prev:
+            fixes.append("converted /mnt/ WSL paths to Windows style")
 
     if _is_enabled("python3"):
         prev = command
@@ -939,7 +1069,7 @@ def main():
         prev = command
         command, pwsh_err = fix_pwsh_quoting(command)
         if pwsh_err:
-            block(pwsh_err)
+            block(pwsh_err, "pwsh_quoting", command)
         if command != prev:
             fixes.append("swapped pwsh -Command quotes from double to single")
 

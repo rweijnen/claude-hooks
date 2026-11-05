@@ -74,11 +74,22 @@ def find_blocked_char(text):
     return None
 
 
+def _write_stderr(message):
+    """Write UTF-8 to stderr regardless of the console code page."""
+    sys.stderr.buffer.write((message + "\n").encode("utf-8"))
+    sys.stderr.buffer.flush()
+
+
 def main():
+    # Decode the bytes as UTF-8 (what Claude Code sends). sys.stdin would
+    # use the Windows code page, turning emoji into cp1252 mojibake that
+    # falls outside BLOCKED_RANGES, so nothing would ever be blocked.
+    raw = sys.stdin.buffer.read()
     try:
-        input_data = json.load(sys.stdin)
-    except (json.JSONDecodeError, ValueError):
-        sys.exit(0)
+        input_data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        _write_stderr(f"check_file_content: hook input is not valid UTF-8 JSON: {e}")
+        sys.exit(1)
 
     tool_name = input_data.get("tool_name", "")
     tool_input = input_data.get("tool_input", {})
@@ -99,10 +110,9 @@ def main():
     result = find_blocked_char(content)
     if result:
         char, cp, category = result
-        print(
+        _write_stderr(
             f"Blocked: found {category} character U+{cp:04X} in file content. "
-            f"Use plain ASCII unless specifically requested by the user.",
-            file=sys.stderr,
+            f"Use plain ASCII unless specifically requested by the user."
         )
         sys.exit(2)
 
