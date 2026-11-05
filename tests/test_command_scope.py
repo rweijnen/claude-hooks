@@ -150,6 +150,45 @@ class TestNulScope:
         assert fbc.fix_nul_redirect(cmd) == "ls > /dev/null; cat > b.bat <<'EOF'\ndir > nul\nEOF"
 
 
+class TestNulRealRedirectsOnly:
+    """#62: rewrite > nul only where a shell redirects to it, also in the script
+    that wsl, ssh or bash -c runs (in WSL on /mnt/c it creates a file cmd and
+    PowerShell cannot delete). Leave it where nul is right or only text."""
+
+    @pytest.mark.parametrize("cmd, expected", [
+        ("ls > nul", "ls > /dev/null"),
+        ("ls 2>nul", "ls 2> /dev/null"),
+        ("ls >NUL 2>&1", "ls > /dev/null 2>&1"),
+        ("ls &> nul", "ls &> /dev/null"),
+        ("ls >> nul", "ls >> /dev/null"),
+        ('ls > "nul"', "ls > /dev/null"),
+        ("x=$(ls 2>nul)", "x=$(ls 2> /dev/null)"),
+        ("ssh pi ls > nul", "ssh pi ls > /dev/null"),                  # redirected locally
+        ("wsl -e sh -c 'make > nul'", "wsl -e sh -c 'make > /dev/null'"),
+        ('ssh pi "ls > nul; echo ok"', 'ssh pi "ls > /dev/null; echo ok"'),
+        ("bash -c 'make 2>nul'", "bash -c 'make 2> /dev/null'"),
+        ("ssh pi bash <<'EOF'\nls > nul\nEOF", "ssh pi bash <<'EOF'\nls > /dev/null\nEOF"),
+        ("bash <<'EOF'\nmake > nul\nEOF", "bash <<'EOF'\nmake > /dev/null\nEOF"),
+        ("wsl -e bash -c \"ssh pi 'ls > nul'\"", "wsl -e bash -c \"ssh pi 'ls > /dev/null'\""),
+    ])
+    def test_real_redirect_rewritten(self, cmd, expected):
+        assert fbc.fix_nul_redirect(cmd) == expected
+
+    @pytest.mark.parametrize("cmd", [
+        'cmd /c "build.bat > nul"',                                     # cmd.exe needs nul
+        "python -c \"a=b'timeout /t 2 /nobreak >nul'; print(a)\"",      # seen in transcripts
+        """echo '{"tool_name":"Bash","tool_input":{"command":"ls > nul"}}' | python hook.py""",  # seen
+        'git commit -m "Rewrite > nul only as a redirect"',
+        "cat > fix.bat <<'EOF'\n@echo off\ndel x > nul\nEOF",
+        "pwsh -NoProfile -Command 'Get-Date > nul'",
+        "ls > /dev/null",
+        "cat nul",
+        "ls  # > nul would be wrong here",
+    ])
+    def test_nul_that_is_right_or_text_untouched(self, cmd):
+        assert fbc.fix_nul_redirect(cmd) == cmd
+
+
 class TestForeignSpans:
     def test_quotes_with_apostrophe_in_heredoc(self):
         """An apostrophe in a heredoc body must not confuse quote tracking."""
