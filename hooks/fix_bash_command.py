@@ -1129,13 +1129,14 @@ def main():
     # -- Emit result --------------------------------------------------------
     if fixes:
         log_autofix(original, command, fixes)
+        # updatedInput replaces the whole tool input: pass every field through
+        # (timeout, run_in_background, description) and change only the command.
+        updated = dict(tool_input)
+        updated["command"] = command
         output = {
             "hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
-                "updatedInput": {
-                    "command": command,
-                    "description": tool_input.get("description", ""),
-                },
+                "updatedInput": updated,
                 "additionalContext": "Hook auto-fixed: " + ", ".join(fixes)
                     + (". If a tool fails because it needs literal backslash "
                        "paths, single-quote those arguments to bypass the fix."
