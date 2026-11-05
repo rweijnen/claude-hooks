@@ -254,3 +254,17 @@ class TestWindowsEnvVarsWholeWord:
     ])
     def test_variable_rewritten(self, cmd, expected):
         assert fbc.fix_windows_env_vars(cmd) == expected
+
+    def test_quoted_heredoc_body_untouched(self):
+        """Seen in practice: a PR description written via <<'EOF' got rewritten."""
+        cmd = "cat > pr.md <<'EOF'\n`$APPDATA` and $USERPROFILE stay literal\nEOF\ngh pr edit 1 -F pr.md"
+        assert fbc.fix_windows_env_vars(cmd) == cmd
+
+    def test_unquoted_heredoc_body_rewritten(self):
+        """bash expands $APPDATA in an unquoted heredoc, so the backslash problem applies."""
+        cmd = 'python - <<EOF\nprint("$APPDATA/x")\nEOF'
+        assert fbc.fix_windows_env_vars(cmd) == 'python - <<EOF\nprint("$HOME/AppData/Roaming/x")\nEOF'
+
+    def test_command_line_next_to_quoted_heredoc_rewritten(self):
+        cmd = "cd $APPDATA && cat > x <<'EOF'\n$APPDATA\nEOF"
+        assert fbc.fix_windows_env_vars(cmd) == "cd $HOME/AppData/Roaming && cat > x <<'EOF'\n$APPDATA\nEOF"
