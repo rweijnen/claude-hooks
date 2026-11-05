@@ -241,3 +241,88 @@ class TestCommitAttribution:
         proc = run_hook(hooks_dir, "fix_bash_command.py",
                         commit("Fix\n\nCo-Authored-By: Claude <noreply@anthropic.com>"))
         assert proc.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# #57 -- # hook:verbatim escape hatch with permission prompt
+# ---------------------------------------------------------------------------
+
+MARK = "  # hook:" + "verbatim"
+
+
+def hook_output(proc):
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    return json.loads(proc.stdout)["hookSpecificOutput"]
+
+
+class TestVerbatim:
+    def test_overridden_fix_asks_with_the_skipped_rewrite(self, hooks_dir):
+        out = hook_output(run_hook(hooks_dir, "fix_bash_command.py",
+                                   bash("ls /c/Users/me" + MARK)))
+        assert out["permissionDecision"] == "ask"
+        assert "updatedInput" not in out
+        reason = out["permissionDecisionReason"]
+        assert "/c/Users/me" in reason and "C:/Users/me" in reason
+        assert "MSYS2 drive paths" in reason
+
+    def test_every_skipped_fix_is_listed(self, hooks_dir):
+        out = hook_output(run_hook(hooks_dir, "fix_bash_command.py",
+                                   bash("ls /c/x $USERPROFILE" + MARK)))
+        reason = out["permissionDecisionReason"]
+        assert "MSYS2 drive paths" in reason and "Windows env vars" in reason
+
+    def test_reason_caps_the_number_of_excerpts(self, hooks_dir):
+        cmd = " ".join(f"/c/d{i}" for i in range(12))
+        out = hook_output(run_hook(hooks_dir, "fix_bash_command.py", bash("ls " + cmd + MARK)))
+        reason = out["permissionDecisionReason"]
+        assert reason.count(" -> ") == 5
+        assert "more" in reason
+
+    def test_noop_when_nothing_would_change(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash("ls -la" + MARK))
+        assert proc.returncode == 0 and proc.stdout == b""
+        entries = log_entries(hooks_dir)
+        assert [(e["type"], e["decision"]) for e in entries] == [("verbatim", "noop")]
+
+    def test_ask_is_logged_with_the_fixes(self, hooks_dir):
+        run_hook(hooks_dir, "fix_bash_command.py", bash("ls /c/x" + MARK))
+        [entry] = log_entries(hooks_dir)
+        assert entry["type"] == "verbatim" and entry["decision"] == "ask"
+        assert entry["fix"] == "msys2_drive_paths"
+        assert entry["proposed"] == "ls C:/x" + MARK
+
+    @pytest.mark.parametrize("cmd", [
+        'echo "# hook:verbatim" /c/x',
+        "echo '# hook:verbatim' /c/x",
+        "cat > notes.md <<'EOF'\n# hook:verbatim\nEOF\nls /c/x",
+    ])
+    def test_marker_in_text_does_not_count(self, hooks_dir, cmd):
+        out = hook_output(run_hook(hooks_dir, "fix_bash_command.py", bash(cmd)))
+        assert "permissionDecision" not in out
+        assert "C:/x" in out["updatedInput"]["command"]
+
+    def test_blocking_checks_still_apply(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash("ls > con" + MARK))
+        assert proc.returncode == 2
+
+    def test_real_nul_redirect_still_blocked(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash("ls > nul" + MARK))
+        assert proc.returncode == 2
+        assert "verbatim" in proc.stderr.decode("utf-8")
+        assert [e["fix"] for e in log_entries(hooks_dir)] == ["nul_redirect"]
+
+    def test_nul_in_text_is_an_ordinary_skipped_rewrite(self, hooks_dir):
+        cmd = """echo '{"command":"ls > nul"}' | python x.py""" + MARK
+        out = hook_output(run_hook(hooks_dir, "fix_bash_command.py", bash(cmd)))
+        assert out["permissionDecision"] == "ask"
+
+    def test_pwsh_quoting_block_becomes_a_question(self, hooks_dir):
+        cmd = """pwsh -NoProfile -Command "Write-Host $x 'y'\"""" + MARK
+        out = hook_output(run_hook(hooks_dir, "fix_bash_command.py", bash(cmd)))
+        assert out["permissionDecision"] == "ask"
+        assert "pwsh" in out["permissionDecisionReason"]
+
+    def test_rewrite_hint_mentions_the_marker(self, hooks_dir):
+        out = hook_output(run_hook(hooks_dir, "fix_bash_command.py", bash("ls /c/x")))
+        assert "# hook:verbatim" in out["additionalContext"]
+        assert "single-quote" not in out["additionalContext"]
