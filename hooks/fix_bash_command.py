@@ -573,6 +573,8 @@ def _classify_words(values):
         return labels, ("data", None)
     while i < n and _cmd_name(values[i]) in _PREFIX_COMMANDS:
         labels[i] = ("cmd", None)
+        if _cmd_name(values[i]) == "command" and i + 1 < n and values[i + 1] in ("-v", "-V"):
+            return labels, ("data", None)    # a lookup like which: nothing runs
         i = _skip_prefix(values, i, _cmd_name(values[i]))
     if i >= n:
         return labels, ("data", None)
@@ -1284,12 +1286,58 @@ def _python3_is_genuine():
     return True
 
 
+def _sub_where(pattern, repl, cmd, allow, flags=0):
+    """re.sub that only replaces matches where allow(parsed, pos) is true,
+    parsed being parse_command(cmd) and pos the start of the match."""
+    parsed = parse_command(cmd)
+
+    def replace(m):
+        if not allow(parsed, m.start()):
+            return m.group(0)
+        return repl(m) if callable(repl) else m.expand(repl)
+    return re.sub(pattern, replace, cmd, flags=flags)
+
+
+def _inner_code_span(cmd, span, pos):
+    """For a position inside a bash -c '...' code word, the span of the inner
+    script at that position (the script parsed on its own), else None."""
+    start, end = span.start, span.end
+    if span.quote in ("'", '"') and end - start >= 2 and cmd[start] == cmd[end - 1] == span.quote:
+        start, end = start + 1, end - 1
+    if not start <= pos < end:
+        return None
+    return parse_command(cmd[start:end]).at(pos - start)
+
+
+def _runs_as_command(parsed, pos):
+    """True if the word at pos is a command word: at the top level, inside
+    $(...) or backticks, or inside the script of a bash -c argument.
+    Arguments, data, python code strings, heredoc bodies, comments and
+    foreign text do not count."""
+    span = parsed.at(pos)
+    if span is None:
+        return False
+    if span.kind == "cmd":
+        return True
+    if span.kind == "code" and span.lang == "bash" and not span.heredoc:
+        inner = _inner_code_span(parsed.text, span, pos)
+        return inner is not None and inner.kind == "cmd"
+    return False
+
+
+_PYTHON3_RE = _WORD_BEFORE + r"python3(?=(?:\.exe)?" + _WORD_AFTER + r")"
+
+
 def fix_python3(cmd):
     """Fix B: python3 -> python when python3 is not a real interpreter here.
 
-    Leaves python3 alone in the arguments of wsl/ssh/adb shell (the other
-    system may need python3) and in heredoc bodies (file content such as
-    a #!/usr/bin/env python3 shebang).
+    Only where python3 runs as a command (#60): a command word, also inside
+    $(...), backticks and bash -c scripts. Lookups (which python3, command -v
+    python3), text (echo, commit messages, grep patterns), python code,
+    heredoc bodies such as a #!/usr/bin/env python3 shebang, comments and
+    wsl/ssh/adb shell arguments (the other system may need python3) are left
+    alone. The step C measurement on #48 found every rewrite outside a
+    command word to be wrong.
 
     python3 must be a whole word (optionally python3.exe): it is left alone
     inside file names, paths and identifiers such as python3-store.png,
@@ -1297,9 +1345,7 @@ def fix_python3(cmd):
     """
     if "python3" not in cmd or _python3_is_genuine():
         return cmd
-    heredocs, foreign = _shell_spans(cmd)
-    return _sub_outside(_WORD_BEFORE + r"python3(?=(?:\.exe)?" + _WORD_AFTER + r")",
-                        "python", cmd, heredocs + foreign)
+    return _sub_where(_PYTHON3_RE, "python", cmd, _runs_as_command)
 
 
 # Mapping of Windows cmd.exe 'dir' flags to GNU 'ls' equivalents
