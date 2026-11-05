@@ -25,11 +25,15 @@ def hooks_dir(tmp_path):
     return tmp_path
 
 
-def run_hook(hooks_dir, script, payload, config=None):
+def run_hook(hooks_dir, script, payload, config=None, conv_excl="*"):
+    """Run a hook as Claude Code does. conv_excl is MSYS2_ARG_CONV_EXCL in the
+    hook's environment (None = unset, Git Bash's default conversion)."""
     if config is not None:
         (hooks_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
     env = {k: v for k, v in os.environ.items()
-           if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+           if k not in ("PYTHONUTF8", "PYTHONIOENCODING", "MSYS2_ARG_CONV_EXCL")}
+    if conv_excl is not None:
+        env["MSYS2_ARG_CONV_EXCL"] = conv_excl
     return subprocess.run(
         [sys.executable, str(hooks_dir / script)],
         input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -104,6 +108,18 @@ class TestUtf8Input:
 def updated_input(proc):
     assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
     return json.loads(proc.stdout)["hookSpecificOutput"]["updatedInput"]
+
+
+class TestConversionSetting:
+    """#53: the hook reads MSYS2_ARG_CONV_EXCL from the environment Claude Code gives it."""
+
+    def test_doubled_flag_fixed_with_conversion_off(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash("ipconfig //all"))
+        assert rewritten(proc) == "ipconfig /all"
+
+    def test_doubled_flag_kept_with_default_conversion(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash("ipconfig //all"), conv_excl=None)
+        assert proc.returncode == 0 and proc.stdout == b""
 
 
 class TestUpdatedInputPassthrough:
