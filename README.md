@@ -187,7 +187,7 @@ Claude Code hooks receive a JSON object on stdin with `tool_name` and `tool_inpu
 
 ## How this project is built
 
-The hooks are written with Claude Code, and we say so rather than hide it. Commits made with Claude carry a `Co-Authored-By: Claude` trailer, and each pull request says what was AI-written and what a person reviewed.
+The hooks are written with Claude Code, and we say so rather than hide it. Commits made with Claude carry a `Co-Authored-By: Claude` trailer, and each pull request says what was AI-written and what a person reviewed. We leave out the default "Generated with Claude Code" line: it says nothing the trailer does not, and the disclosure says more.
 
 - Claude writes the code changes and the tests, including end-to-end tests built from real commands in Claude Code transcripts and a replay of past commands through the old and the new hook.
 - A person reviews the test results and decides which changes to make.
