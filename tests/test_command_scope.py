@@ -322,15 +322,23 @@ class TestWslPathsWholeWord:
         assert fbc.fix_wsl_paths(cmd) == expected
 
 
+@pytest.fixture
+def windows_env(monkeypatch):
+    monkeypatch.setenv("USERPROFILE", "C:\\Users\\me")
+    monkeypatch.setenv("APPDATA", "C:\\Users\\me\\AppData\\Roaming")
+    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\me\\AppData\\Local")
+
+
+@pytest.mark.usefixtures("windows_env")
 class TestWindowsEnvVarsWholeWord:
     def test_longer_variable_name_untouched(self):
         cmd = 'echo "$APPDATA_DIR/x"'
         assert fbc.fix_windows_env_vars(cmd) == cmd
 
     @pytest.mark.parametrize("cmd, expected", [
-        ('cd "$APPDATA/Code"', 'cd "$HOME/AppData/Roaming/Code"'),
-        ("ls ${LOCALAPPDATA}/Temp", "ls $HOME/AppData/Local/Temp"),
-        ("echo $USERPROFILE", "echo $HOME"),
+        ('cd "$APPDATA/Code"', 'cd "C:/Users/me/AppData/Roaming/Code"'),
+        ("ls ${LOCALAPPDATA}/Temp", "ls C:/Users/me/AppData/Local/Temp"),
+        ("echo $USERPROFILE", "echo C:/Users/me"),
     ])
     def test_variable_rewritten(self, cmd, expected):
         assert fbc.fix_windows_env_vars(cmd) == expected
@@ -343,8 +351,8 @@ class TestWindowsEnvVarsWholeWord:
     def test_unquoted_heredoc_body_rewritten(self):
         """bash expands $APPDATA in an unquoted heredoc, so the backslash problem applies."""
         cmd = 'python - <<EOF\nprint("$APPDATA/x")\nEOF'
-        assert fbc.fix_windows_env_vars(cmd) == 'python - <<EOF\nprint("$HOME/AppData/Roaming/x")\nEOF'
+        assert fbc.fix_windows_env_vars(cmd) == 'python - <<EOF\nprint("C:/Users/me/AppData/Roaming/x")\nEOF'
 
     def test_command_line_next_to_quoted_heredoc_rewritten(self):
         cmd = "cd $APPDATA && cat > x <<'EOF'\n$APPDATA\nEOF"
-        assert fbc.fix_windows_env_vars(cmd) == "cd $HOME/AppData/Roaming && cat > x <<'EOF'\n$APPDATA\nEOF"
+        assert fbc.fix_windows_env_vars(cmd) == "cd C:/Users/me/AppData/Roaming && cat > x <<'EOF'\n$APPDATA\nEOF"

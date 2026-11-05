@@ -309,24 +309,58 @@ class TestFixPwshNoprofile:
 # fix_windows_env_vars (tier 1 auto-fix)
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def windows_env(monkeypatch):
+    """The Windows variables as Git Bash passes them on: backslash paths."""
+    monkeypatch.setenv("USERPROFILE", "C:\\Users\\me")
+    monkeypatch.setenv("APPDATA", "C:\\Users\\me\\AppData\\Roaming")
+    monkeypatch.setenv("LOCALAPPDATA", "C:\\Users\\me\\AppData\\Local")
+
+
+# #64: the rewrite target is the forward-slash Windows path. $HOME/... is
+# /c/Users/me/..., which native programs cannot open with MSYS2_ARG_CONV_EXCL=*.
+@pytest.mark.usefixtures("windows_env")
 class TestFixWindowsEnvVars:
     def test_userprofile(self):
-        assert fix_windows_env_vars("echo $USERPROFILE") == "echo $HOME"
+        assert fix_windows_env_vars("echo $USERPROFILE") == "echo C:/Users/me"
 
     def test_appdata(self):
-        assert fix_windows_env_vars("ls $APPDATA") == "ls $HOME/AppData/Roaming"
+        assert fix_windows_env_vars("ls $APPDATA") == "ls C:/Users/me/AppData/Roaming"
 
     def test_localappdata(self):
-        assert fix_windows_env_vars("ls $LOCALAPPDATA") == "ls $HOME/AppData/Local"
+        assert fix_windows_env_vars("ls $LOCALAPPDATA") == "ls C:/Users/me/AppData/Local"
 
     def test_braced_userprofile(self):
-        assert fix_windows_env_vars("echo ${USERPROFILE}") == "echo $HOME"
+        assert fix_windows_env_vars("echo ${USERPROFILE}") == "echo C:/Users/me"
 
     def test_braced_appdata(self):
-        assert fix_windows_env_vars("echo ${APPDATA}") == "echo $HOME/AppData/Roaming"
+        assert fix_windows_env_vars("echo ${APPDATA}") == "echo C:/Users/me/AppData/Roaming"
 
     def test_braced_localappdata(self):
-        assert fix_windows_env_vars("echo ${LOCALAPPDATA}") == "echo $HOME/AppData/Local"
+        assert fix_windows_env_vars("echo ${LOCALAPPDATA}") == "echo C:/Users/me/AppData/Local"
+
+    def test_escaped_dollar_untouched(self):
+        """Seen in practice: \\$APPDATA in a commit message, which bash never expands."""
+        cmd = 'git commit -m "bash never expands, so \\$APPDATA there"'
+        assert fix_windows_env_vars(cmd) == cmd
+
+    @pytest.mark.parametrize("cmd", [
+        "echo '$APPDATA is literal here'",
+        "ssh pi 'echo $USERPROFILE'",
+        "ssh pi echo $USERPROFILE",
+        'cmd /c "dir $USERPROFILE"',
+        'pwsh -NoProfile -Command "Get-ChildItem $APPDATA"',
+        "ls  # $APPDATA",
+    ])
+    def test_not_expanded_or_native_backslash_untouched(self, cmd):
+        assert fix_windows_env_vars(cmd) == cmd
+
+    def test_inside_bash_c_script_rewritten(self):
+        assert fix_windows_env_vars("bash -c 'ls $APPDATA'") == "bash -c 'ls C:/Users/me/AppData/Roaming'"
+
+    def test_variable_missing_from_environment_left_alone(self, monkeypatch):
+        monkeypatch.delenv("LOCALAPPDATA")
+        assert fix_windows_env_vars("ls $LOCALAPPDATA") == "ls $LOCALAPPDATA"
 
     def test_pwsh_skipped(self):
         cmd = "pwsh -Command 'echo $USERPROFILE'"
@@ -342,9 +376,9 @@ class TestFixWindowsEnvVars:
 
     def test_multiple_vars(self):
         cmd = "cp $USERPROFILE/file $LOCALAPPDATA/dest"
-        assert fix_windows_env_vars(cmd) == "cp $HOME/file $HOME/AppData/Local/dest"
+        assert fix_windows_env_vars(cmd) == "cp C:/Users/me/file C:/Users/me/AppData/Local/dest"
 
     def test_in_python_command(self):
         cmd = 'python -c "import os; print(os.path.join(\'$USERPROFILE\', \'docs\'))"'
-        expected = 'python -c "import os; print(os.path.join(\'$HOME\', \'docs\'))"'
+        expected = 'python -c "import os; print(os.path.join(\'C:/Users/me\', \'docs\'))"'
         assert fix_windows_env_vars(cmd) == expected
