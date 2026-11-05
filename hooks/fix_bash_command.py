@@ -322,19 +322,6 @@ _HEREDOC_RE = re.compile(
 )
 
 
-# A heredoc whose delimiter is quoted (<<'EOF', <<"EOF"): bash does not expand
-# anything in its body, so the body is literal text.
-_QUOTED_HEREDOC_RE = re.compile(
-    r"<<-?\s*(['\"])(\w+)\1.*?\n(.*?\n)\2",
-    re.DOTALL,
-)
-
-
-def _quoted_heredoc_spans(cmd):
-    """(start, end) of every quoted-delimiter heredoc body."""
-    return [(m.start(3), m.end(3)) for m in _QUOTED_HEREDOC_RE.finditer(cmd)]
-
-
 def _strip_heredocs(cmd):
     """Remove heredoc bodies from a command string.
 
@@ -1242,11 +1229,7 @@ def fix_nul_redirect(cmd):
     return cmd
 
 
-_WINDOWS_ENV_VARS = {
-    "USERPROFILE": "$HOME",
-    "APPDATA": "$HOME/AppData/Roaming",
-    "LOCALAPPDATA": "$HOME/AppData/Local",
-}
+_WINDOWS_ENV_VARS = ("USERPROFILE", "APPDATA", "LOCALAPPDATA")
 
 _WINDOWS_ENV_NAMES = "|".join(_WINDOWS_ENV_VARS)
 # $NAME must not continue into a longer variable name ($APPDATA_DIR).
@@ -1255,30 +1238,68 @@ _WINDOWS_ENV_RE = re.compile(
 )
 
 
+def _env_var_expands_here(parsed, pos):
+    """True if bash expands the $NAME at pos into text a fix may change:
+    not escaped, not single-quoted or in a quoted heredoc, not a comment,
+    not text for another system, and not pwsh or cmd code, where the
+    native backslash path is right. Inside a bash -c script, the inner
+    script decides."""
+    text = parsed.text
+    backslashes = 0
+    while pos - backslashes > 0 and text[pos - backslashes - 1] == "\\":
+        backslashes += 1
+    if backslashes % 2:
+        return False
+    span = parsed.at(pos)
+    if span is None or span.kind in ("foreign", "comment", "op"):
+        return False
+    if span.kind == "code" and span.lang in ("pwsh", "cmd"):
+        return False
+    if span.kind == "code" and span.lang == "bash" and not span.heredoc:
+        inner_text = _strip_outer_quotes(text, span)
+        inner_pos = pos - span.start - (len(text[span.start:span.end]) - len(inner_text)) // 2
+        if not 0 <= inner_pos < len(inner_text):
+            return False
+        return _env_var_expands_here(parse_command(inner_text), inner_pos)
+    return span.expands
+
+
+def _strip_outer_quotes(text, span):
+    s = text[span.start:span.end]
+    if span.quote in ("'", '"') and len(s) >= 2 and s[0] == s[-1] == span.quote:
+        return s[1:-1]
+    return s
+
+
 def fix_windows_env_vars(cmd):
-    r"""Fix O: replace Windows env vars with bash-safe equivalents.
+    r"""Fix O: $USERPROFILE / $APPDATA / $LOCALAPPDATA -> C:/Users/name/...
 
-    $USERPROFILE, $APPDATA, $LOCALAPPDATA resolve to backslash paths in
-    Git Bash (C:\Users\name). When expanded inside string literals (e.g.
-    python -c), backslashes cause errors (\U = Python unicode escape).
-    $HOME resolves to /c/Users/name (forward slashes, safe).
+    In Git Bash these expand to backslash paths (C:\Users\name). Inside a
+    string literal (python -c "...") that is an error (\U is a unicode
+    escape). The rewrite uses the variable's own value with forward
+    slashes, read from the hook's environment: native programs open
+    C:/Users/name under either MSYS2 conversion setting, while a
+    $HOME-based /c/Users/name path does not exist for them when
+    MSYS2_ARG_CONV_EXCL=* (#64). A variable missing from the environment
+    is left as written.
 
-    Skips commands starting with pwsh or powershell, where the Windows
-    env vars are native and correct, and bodies of quoted heredocs
-    (<<'EOF'), which bash does not expand.
+    Only where bash expands the variable (see _env_var_expands_here).
+    Commands starting with pwsh or powershell are skipped: there the
+    variables are native and correct.
 
     Credit: @kmgallahan
     """
     stripped = cmd.lstrip()
     if re.match(r"(?:pwsh|powershell)(?:\.exe)?\s", stripped, re.IGNORECASE):
         return cmd
+    if "$" not in cmd:
+        return cmd
 
-    return _sub_outside(
-        _WINDOWS_ENV_RE,
-        lambda m: _WINDOWS_ENV_VARS[m.group(1) or m.group(2)],
-        cmd,
-        _quoted_heredoc_spans(cmd),
-    )
+    def replace(m):
+        value = os.environ.get(m.group(1) or m.group(2))
+        return value.replace("\\", "/") if value else m.group(0)
+
+    return _sub_where(_WINDOWS_ENV_RE, replace, cmd, _env_var_expands_here)
 
 
 def fix_msys2_drive_paths(cmd):
