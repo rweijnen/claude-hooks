@@ -11,7 +11,7 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 | PowerShell quoting | `pwsh -Command "$..."` | Auto-fix | Swap to single quotes |
 | MSYS2 drive paths | `/c/Work/...` | Auto-fix | Rewrite to `C:/Work/...`; not inside wsl/ssh/adb shell arguments |
 | Reserved names | `> con`, `> prn`, `touch aux.txt` | Block | Reject -- undeletable files |
-| Commit messages | Co-Authored-By, emoji, "Generated with" | Block | Reject with message |
+| Commit messages | AI Co-Authored-By trailers, "Generated with" AI footers, emoji | Block (opt-in) | Reject with a message naming the check |
 | Doubled flags | `tasklist //fi` | Auto-fix | Rewrite to single `/` |
 | Backslash paths | `C:\Users\...` | Auto-fix | Rewrite to `C:/Users/...` |
 | UNC paths | `\\server\share\...` | Block | Suggest `//server/share/...` |
@@ -158,12 +158,12 @@ Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true
 | `dir_in_pwsh` | Block `dir /flag` inside pwsh | on | block |
 | `powershell_legacy` | Block `powershell.exe`, suggest pwsh | on | block |
 | `wsl_invocation` | Block `wsl` commands when WSL is not installed | on | block |
-| `git_commit_attribution` | Block Co-Authored-By in commits | off | block |
-| `git_commit_generated` | Block "Generated with" in commits | off | block |
+| `git_commit_attribution` | Block Co-Authored-By trailers that name an AI assistant (human co-authors pass) | off | block |
+| `git_commit_generated` | Block "Generated with/by <AI tool>" footers in commits | off | block |
 | `git_commit_emoji` | Block emoji in commit messages | off | block |
 | `file_content_unicode` | Block emoji/unicode in file writes | off | block |
 
-Safety checks (default on) prevent real mistakes that break commands or create undeletable files. Style checks (default off) enforce preferences -- enable the ones you want.
+Safety checks (default on) prevent real mistakes that break commands or create undeletable files. Style checks (default off) enforce preferences -- enable the ones you want. The commit attribution checks are for repos whose own policy disallows these lines; this project itself discloses AI use (see [How this project is built](#how-this-project-is-built)).
 
 See `config.sample.json` for descriptions of each check.
 
@@ -184,6 +184,13 @@ Claude Code hooks receive a JSON object on stdin with `tool_name` and `tool_inpu
 - **Exit 0** with no output: allow the command unchanged
 - **Exit 0** with JSON on stdout: rewrite the command via `updatedInput`
 - **Exit 2** with a message on stderr: block the command and show the message to Claude
+
+## How this project is built
+
+The hooks are written with Claude Code, and we say so rather than hide it. Commits made with Claude carry a `Co-Authored-By: Claude` trailer, and each pull request says what was AI-written and what a person reviewed.
+
+- Claude writes the code changes and the tests, including end-to-end tests built from real commands in Claude Code transcripts and a replay of past commands through the old and the new hook.
+- A person reviews the test results and decides which changes to make.
 
 ## Credits
 
