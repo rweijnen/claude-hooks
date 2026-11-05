@@ -94,6 +94,26 @@ Each line is a JSON object with:
 
 When the log exceeds 5 MB it is trimmed to the newest 2.5 MB (several weeks of typical use), so it won't grow unbounded.
 
+## Recommended setting: PYTHONUTF8
+
+The hooks handle UTF-8 themselves, but the Python scripts Claude writes and runs do not. Claude Code captures their output through a pipe, so on Windows Python encodes it with the ANSI code page (cp1252), and a script that prints an arrow or a Greek letter crashes:
+
+```
+UnicodeEncodeError: 'charmap' codec can't encode character 'λ' in position 0: character maps to <undefined>
+```
+
+Turning on Python's UTF-8 mode for everything Claude Code starts fixes this. Add it to the `env` block of `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "PYTHONUTF8": "1"
+  }
+}
+```
+
+It takes effect in running sessions without a restart. Side effect: `open()` without an `encoding` argument then reads and writes UTF-8 instead of cp1252, which is usually what you want, but matters if you have scripts that read legacy cp1252 files. `install.py` does not set this for you because it affects every Python process, not just the hooks. Python 3.15 makes UTF-8 mode the default ([PEP 686](https://peps.python.org/pep-0686/)), so this is only needed on 3.14 and older.
+
 ## Updating
 
 Pull the latest changes and re-run the installer:
