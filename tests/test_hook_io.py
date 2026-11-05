@@ -111,7 +111,7 @@ class TestLogging:
         assert entries[0]["type"] == "suggest"
 
     def test_git_commit_block_is_logged(self, hooks_dir):
-        cmd = 'git commit -m "Fix\n\nCo-Authored-By: X <x@example.com>"'
+        cmd = 'git commit -m "Fix\n\nCo-Authored-By: Claude <noreply@anthropic.com>"'
         proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd),
                         config={"git_commit_attribution": True})
         assert proc.returncode == 2
@@ -142,3 +142,62 @@ class TestLogging:
         entries = log_entries(hooks_dir)
         assert entries[-1]["fix"] == "replaced > nul with > /dev/null"
         assert len(entries) > 1000
+
+
+# ---------------------------------------------------------------------------
+# #43 -- commit attribution checks: AI trailers only, neutral message
+# ---------------------------------------------------------------------------
+
+COMMIT_CHECKS = {"git_commit_attribution": True, "git_commit_generated": True}
+
+
+def commit(message):
+    return bash('git commit -m "' + message + '"')
+
+
+class TestCommitAttribution:
+    @pytest.mark.parametrize("trailer", [
+        "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+        "Co-authored-by: Claude <noreply@anthropic.com>",
+        "Co-Authored-By: Copilot <175728472+Copilot@users.noreply.github.com>",
+        "Co-Authored-By: ChatGPT <noreply@openai.com>",
+        "Co-Authored-By: Aider <aider@aider.chat>",
+    ])
+    def test_ai_trailer_blocked(self, hooks_dir, trailer):
+        proc = run_hook(hooks_dir, "fix_bash_command.py",
+                        commit("Fix parser\n\n" + trailer), config=COMMIT_CHECKS)
+        assert proc.returncode == 2
+        assert [e["fix"] for e in log_entries(hooks_dir)] == ["git_commit_attribution"]
+
+    def test_human_coauthor_allowed(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py",
+                        commit("Fix parser\n\nCo-Authored-By: Jane Doe <jane@example.com>"),
+                        config=COMMIT_CHECKS)
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+
+    def test_ai_generated_footer_blocked(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py",
+                        commit("Fix parser\n\nGenerated with [Claude Code](https://claude.com/claude-code)"),
+                        config=COMMIT_CHECKS)
+        assert proc.returncode == 2
+        assert [e["fix"] for e in log_entries(hooks_dir)] == ["git_commit_generated"]
+
+    def test_unrelated_generated_with_allowed(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py",
+                        commit("Regenerate fixtures generated with protoc"),
+                        config=COMMIT_CHECKS)
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+
+    def test_message_is_neutral_and_names_check(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py",
+                        commit("Fix\n\nCo-Authored-By: Claude <noreply@anthropic.com>"),
+                        config=COMMIT_CHECKS)
+        msg = proc.stderr.decode("utf-8")
+        assert "git_commit_attribution" in msg
+        assert "config.json" in msg
+        assert "Remove AI attribution" not in msg
+
+    def test_checks_off_by_default(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py",
+                        commit("Fix\n\nCo-Authored-By: Claude <noreply@anthropic.com>"))
+        assert proc.returncode == 0

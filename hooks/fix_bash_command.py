@@ -223,23 +223,36 @@ EMOJI_RE = re.compile(
 # Tier 2 -- blocking checks (run first so bad commands never execute)
 # ---------------------------------------------------------------------------
 
+# Names and domains of AI coding assistants, as they appear in commit trailers
+# and "Generated with" footers. Human co-authors never match.
+_AI_TOOLS = (r"\b(?:claude|anthropic|copilot|chatgpt|openai|gemini|cursor|"
+             r"codex|aider|devin)\b")
+_AI_COAUTHOR_RE = re.compile(r"co-authored-by:[^\n]*?" + _AI_TOOLS, re.IGNORECASE)
+_AI_GENERATED_RE = re.compile(r"\bgenerated\s+(?:with|by)\b[^\n]*?" + _AI_TOOLS,
+                              re.IGNORECASE)
+
+
+def _policy_message(what, check_id):
+    return (f"Commit message contains {what}. This hook config disallows it "
+            f"({check_id}). Remove it, or set \"{check_id}\": false in "
+            f"config.json to allow it.")
+
+
 def check_git_commit_attribution(cmd):
-    """Block git commit messages with Co-Authored-By."""
+    """Block Co-Authored-By trailers that name an AI assistant (opt-in policy)."""
     if not re.search(r"\bgit\s+commit\b", cmd):
         return
-    if re.search(r"co-authored-by", cmd, re.IGNORECASE):
-        block("Commit message contains Co-Authored-By. "
-              "Remove AI attribution from commit messages.",
+    if _AI_COAUTHOR_RE.search(cmd):
+        block(_policy_message("an AI Co-Authored-By trailer", "git_commit_attribution"),
               "git_commit_attribution", cmd)
 
 
 def check_git_commit_generated(cmd):
-    """Block git commit messages with 'Generated with'."""
+    """Block 'Generated with <AI tool>' footers (opt-in policy)."""
     if not re.search(r"\bgit\s+commit\b", cmd):
         return
-    if re.search(r"generated with", cmd, re.IGNORECASE):
-        block("Commit message contains 'Generated with'. "
-              "Remove AI attribution from commit messages.",
+    if _AI_GENERATED_RE.search(cmd):
+        block(_policy_message("a 'Generated with' AI footer", "git_commit_generated"),
               "git_commit_generated", cmd)
 
 
