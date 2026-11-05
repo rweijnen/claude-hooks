@@ -98,6 +98,30 @@ class TestUtf8Input:
 
 
 # ---------------------------------------------------------------------------
+# #49 -- updatedInput replaces the whole tool input
+# ---------------------------------------------------------------------------
+
+def updated_input(proc):
+    assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+    return json.loads(proc.stdout)["hookSpecificOutput"]["updatedInput"]
+
+
+class TestUpdatedInputPassthrough:
+    def test_timeout_and_background_kept(self, hooks_dir):
+        payload = {"tool_name": "Bash", "tool_input": {
+            "command": "ls > nul", "description": "d",
+            "timeout": 600000, "run_in_background": True}}
+        out = updated_input(run_hook(hooks_dir, "fix_bash_command.py", payload))
+        assert out == {"command": "ls > /dev/null", "description": "d",
+                       "timeout": 600000, "run_in_background": True}
+
+    def test_no_description_invented(self, hooks_dir):
+        payload = {"tool_name": "Bash", "tool_input": {"command": "ls > nul"}}
+        out = updated_input(run_hook(hooks_dir, "fix_bash_command.py", payload))
+        assert out == {"command": "ls > /dev/null"}
+
+
+# ---------------------------------------------------------------------------
 # #39 -- logging
 # ---------------------------------------------------------------------------
 
