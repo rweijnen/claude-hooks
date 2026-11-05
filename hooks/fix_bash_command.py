@@ -395,6 +395,14 @@ def _shell_spans(cmd):
     return heredocs, foreign
 
 
+# A trigger must be a whole word, not part of a longer file name, path, URL
+# or identifier: `python3` in `C:/temp/python3-store.png` or `python3_x` is
+# not a command, and `/mnt/c/` in `/srv/mnt/c/` is not a WSL mount path.
+_NAME_OR_PATH_CHAR = r"[\w.~:/\\-]"
+_WORD_BEFORE = r"(?<!" + _NAME_OR_PATH_CHAR + r")"
+_WORD_AFTER = r"(?!" + _NAME_OR_PATH_CHAR + r")"
+
+
 def _sub_outside(pattern, repl, cmd, spans, flags=0):
     """re.sub that leaves matches starting inside any of spans untouched."""
     def replace(m):
@@ -501,7 +509,7 @@ def fix_wsl_paths(cmd):
         return cmd
     heredocs, foreign = _shell_spans(cmd)
     return _sub_outside(
-        r"/mnt/([a-zA-Z])/",
+        _WORD_BEFORE + r"/mnt/([a-zA-Z])/",
         lambda m: m.group(1).upper() + ":/",
         cmd,
         heredocs + foreign,
@@ -615,8 +623,10 @@ _WINDOWS_ENV_VARS = {
     "LOCALAPPDATA": "$HOME/AppData/Local",
 }
 
+_WINDOWS_ENV_NAMES = "|".join(_WINDOWS_ENV_VARS)
+# $NAME must not continue into a longer variable name ($APPDATA_DIR).
 _WINDOWS_ENV_RE = re.compile(
-    r"\$\{?(" + "|".join(_WINDOWS_ENV_VARS) + r")\}?",
+    r"\$(?:\{(" + _WINDOWS_ENV_NAMES + r")\}|(" + _WINDOWS_ENV_NAMES + r")(?!\w))",
 )
 
 
@@ -638,7 +648,7 @@ def fix_windows_env_vars(cmd):
         return cmd
 
     return _WINDOWS_ENV_RE.sub(
-        lambda m: _WINDOWS_ENV_VARS[m.group(1)],
+        lambda m: _WINDOWS_ENV_VARS[m.group(1) or m.group(2)],
         cmd,
     )
 
@@ -690,13 +700,15 @@ def fix_python3(cmd):
     system may need python3) and in heredoc bodies (file content such as
     a #!/usr/bin/env python3 shebang).
 
-    Also avoids corrupting version-specific paths like /usr/bin/python3.9 by
-    requiring that python3 is not followed by a digit or dot.
+    python3 must be a whole word (optionally python3.exe): it is left alone
+    inside file names, paths and identifiers such as python3-store.png,
+    /usr/bin/python3.9 or python3_helper.
     """
     if "python3" not in cmd or _python3_is_genuine():
         return cmd
     heredocs, foreign = _shell_spans(cmd)
-    return _sub_outside(r"\bpython3(?![\d.])", "python", cmd, heredocs + foreign)
+    return _sub_outside(_WORD_BEFORE + r"python3(?=(?:\.exe)?" + _WORD_AFTER + r")",
+                        "python", cmd, heredocs + foreign)
 
 
 # Mapping of Windows cmd.exe 'dir' flags to GNU 'ls' equivalents
