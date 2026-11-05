@@ -305,6 +305,19 @@ _HEREDOC_RE = re.compile(
 )
 
 
+# A heredoc whose delimiter is quoted (<<'EOF', <<"EOF"): bash does not expand
+# anything in its body, so the body is literal text.
+_QUOTED_HEREDOC_RE = re.compile(
+    r"<<-?\s*(['\"])(\w+)\1.*?\n(.*?\n)\2",
+    re.DOTALL,
+)
+
+
+def _quoted_heredoc_spans(cmd):
+    """(start, end) of every quoted-delimiter heredoc body."""
+    return [(m.start(3), m.end(3)) for m in _QUOTED_HEREDOC_RE.finditer(cmd)]
+
+
 def _strip_heredocs(cmd):
     """Remove heredoc bodies from a command string.
 
@@ -639,7 +652,8 @@ def fix_windows_env_vars(cmd):
     $HOME resolves to /c/Users/name (forward slashes, safe).
 
     Skips commands starting with pwsh or powershell, where the Windows
-    env vars are native and correct.
+    env vars are native and correct, and bodies of quoted heredocs
+    (<<'EOF'), which bash does not expand.
 
     Credit: @kmgallahan
     """
@@ -647,9 +661,11 @@ def fix_windows_env_vars(cmd):
     if re.match(r"(?:pwsh|powershell)(?:\.exe)?\s", stripped, re.IGNORECASE):
         return cmd
 
-    return _WINDOWS_ENV_RE.sub(
+    return _sub_outside(
+        _WINDOWS_ENV_RE,
         lambda m: _WINDOWS_ENV_VARS[m.group(1) or m.group(2)],
         cmd,
+        _quoted_heredoc_spans(cmd),
     )
 
 
