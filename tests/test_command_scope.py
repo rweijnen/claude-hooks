@@ -191,3 +191,66 @@ class TestPython3Detection:
         (apps / "PythonSoftwareFoundation.Python.3.12_qbz5n2kfra8p0").mkdir()
         monkeypatch.setattr(fbc.shutil, "which", lambda name: str(apps / "python3.exe"))
         assert fbc.fix_python3("python3 x.py") == "python3 x.py"
+
+
+# ---------------------------------------------------------------------------
+# #45 -- triggers inside file names, paths and variable names
+# ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("python3_is_stub")
+class TestPython3WholeWord:
+    @pytest.mark.parametrize("cmd", [
+        'cp "C:/temp/python3-store.png" "C:/x/"',      # seen in a transcript
+        'grep -n "python3_is_stub" tests/x.py',        # seen in a transcript
+        "ls docs/python3/notes.md",
+        "cat python3.md",
+        "pip install python3-dateutil",
+        "cd my-python3",
+    ])
+    def test_inside_name_untouched(self, cmd):
+        assert fbc.fix_python3(cmd) == cmd
+
+    @pytest.mark.parametrize("cmd, expected", [
+        ("python3 x.py", "python x.py"),
+        ("cd /tmp && python3 x.py", "cd /tmp && python x.py"),
+        ("env python3 x.py", "env python x.py"),
+        ("ls *.py | xargs python3 -m py_compile", "ls *.py | xargs python -m py_compile"),
+        ("(python3 x.py)", "(python x.py)"),
+        ("python3.exe x.py", "python.exe x.py"),
+        ('python -c "import subprocess; subprocess.run([\'python3\', \'-V\'])"',
+         'python -c "import subprocess; subprocess.run([\'python\', \'-V\'])"'),
+    ])
+    def test_command_word_rewritten(self, cmd, expected):
+        assert fbc.fix_python3(cmd) == expected
+
+
+class TestWslPathsWholeWord:
+    def test_mnt_inside_longer_path_untouched(self):
+        cmd = "ls /srv/mnt/d/backup"
+        assert fbc.fix_wsl_paths(cmd) == cmd
+
+    def test_mnt_in_url_untouched(self):
+        cmd = "curl https://example.com/mnt/c/file"
+        assert fbc.fix_wsl_paths(cmd) == cmd
+
+    @pytest.mark.parametrize("cmd, expected", [
+        ("ls /mnt/c/Users", "ls C:/Users"),
+        ('cat "/mnt/c/x.txt"', 'cat "C:/x.txt"'),
+        ("cp a --target=/mnt/d/out", "cp a --target=D:/out"),
+    ])
+    def test_standalone_mnt_rewritten(self, cmd, expected):
+        assert fbc.fix_wsl_paths(cmd) == expected
+
+
+class TestWindowsEnvVarsWholeWord:
+    def test_longer_variable_name_untouched(self):
+        cmd = 'echo "$APPDATA_DIR/x"'
+        assert fbc.fix_windows_env_vars(cmd) == cmd
+
+    @pytest.mark.parametrize("cmd, expected", [
+        ('cd "$APPDATA/Code"', 'cd "$HOME/AppData/Roaming/Code"'),
+        ("ls ${LOCALAPPDATA}/Temp", "ls $HOME/AppData/Local/Temp"),
+        ("echo $USERPROFILE", "echo $HOME"),
+    ])
+    def test_variable_rewritten(self, cmd, expected):
+        assert fbc.fix_windows_env_vars(cmd) == expected
