@@ -9,11 +9,14 @@ Tier 2 (suggest):  blocks with exit 2 and a message showing the proposed fix.
 Both tiers log to fixups.log next to this script for review.
 """
 
+import bisect
+import functools
 import json
 import os
 import re
 import shutil
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -423,6 +426,537 @@ def _sub_outside(pattern, repl, cmd, spans, flags=0):
             return m.group(0)
         return repl(m) if callable(repl) else m.expand(repl)
     return re.sub(pattern, replace, cmd, flags=flags)
+
+
+# ---------------------------------------------------------------------------
+# Command parsing: split a command into typed spans (v2, #48 / #51)
+#
+# A fix should only touch text that is a command, not text about a command.
+# parse_command() labels every character of the command with what it is:
+#   cmd      a command word (after assignments, keywords, prefix commands)
+#   arg      an ordinary argument or redirect target
+#   code     text another interpreter runs (python -c, bash -c, pwsh -Command,
+#            cmd /c, a heredoc fed to python - or bash)
+#   foreign  text that runs on another system (wsl/ssh/plink/adb shell)
+#   data     text no program runs (echo/printf arguments, git commit -m, gh
+#            --body/--title, grep/sed/awk patterns, heredocs written to a file)
+#   comment  a shell comment
+#   op       whitespace, separators, redirect operators, heredoc delimiters
+# This is a scanner for the bash that Claude writes, not a full bash grammar.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Span:
+    start: int
+    end: int
+    kind: str
+    lang: str = None     # for code: python | bash | pwsh | cmd
+    quote: str = ""      # "" | "'" | '"' | "$'" | "<<'" (quoted heredoc) | "<<"
+    heredoc: bool = False
+
+    @property
+    def expands(self):
+        """True where bash performs $-expansion on this text."""
+        return self.quote in ("", '"', "<<")
+
+
+@dataclass(frozen=True)
+class Parsed:
+    text: str
+    spans: tuple
+    starts: tuple
+    redirects: tuple     # (op_start, op_end, target_start, target_end)
+    verbatim: bool       # a top-level "# hook:verbatim" comment is present
+
+    def at(self, pos):
+        """The span containing position pos, or None outside the text."""
+        if pos < 0 or pos >= len(self.text):
+            return None
+        return self.spans[bisect.bisect_right(self.starts, pos) - 1]
+
+
+_OP = ("op", None, "", False)
+_COMMENT = ("comment", None, "", False)
+_REDIRECT_RE = re.compile(r"\d*(?:<<<|<<-|<<|&>>|&>|>>|>&|<&|<>|>\||>|<)")
+_ASSIGN_RE = re.compile(r"[A-Za-z_]\w*\+?=")
+_VERBATIM_RE = re.compile(r"#\s*hook:verbatim\s*")
+_KEYWORDS = frozenset({"if", "then", "else", "elif", "fi", "do", "done", "while",
+                       "until", "!", "{", "}", "time", "coproc"})
+_LIST_KEYWORDS = frozenset({"for", "select", "case", "function"})
+
+
+class _Word:
+    __slots__ = ("start", "end", "pieces", "value", "raw")
+
+    def __init__(self, start, end, pieces, value, raw):
+        self.start, self.end, self.pieces, self.value, self.raw = start, end, pieces, value, raw
+
+
+class _SimpleCommand:
+    __slots__ = ("words", "targets", "heredoc")
+
+    def __init__(self):
+        self.words = []
+        self.targets = []
+        self.heredoc = ("data", None)
+
+
+def _cmd_name(value):
+    name = value.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def _label_rest(labels, start, label):
+    for k in range(start, len(labels)):
+        labels[k] = label
+
+
+def _skip_prefix(values, i, name):
+    """Index of the first word after a prefix command and its options."""
+    n = len(values)
+    i += 1
+    if name == "env":
+        while i < n and (values[i].startswith("-") or _ASSIGN_RE.match(values[i])):
+            i += 2 if values[i] in ("-u", "-C", "-S") else 1
+    elif name == "sudo":
+        while i < n and values[i].startswith("-"):
+            i += 2 if values[i] in ("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T") else 1
+    elif name == "nice":
+        if i < n and values[i] == "-n":
+            i += 2
+        elif i < n and values[i].startswith("-"):
+            i += 1
+    elif name == "timeout":
+        while i < n and values[i].startswith("-"):
+            i += 2 if values[i] in ("-s", "-k", "--signal", "--kill-after") else 1
+        i += 1
+    elif name == "xargs":
+        while i < n and values[i].startswith("-"):
+            i += 2 if values[i] in ("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-a") else 1
+    return min(i, n)
+
+
+_PREFIX_COMMANDS = frozenset({"env", "sudo", "nice", "timeout", "xargs", "nohup",
+                              "command", "exec", "builtin", "winpty"})
+_PATTERN_VALUE_OPTS = frozenset({"-A", "-B", "-C", "-m", "-d", "-D", "-g", "-t", "-T", "-M",
+                                 "-j", "--max-count", "--context", "--after-context",
+                                 "--before-context", "--include", "--exclude",
+                                 "--exclude-dir", "--glob", "--type", "--type-not"})
+
+
+def _classify_words(values):
+    """Kinds for the words of one simple command, plus the kind of a heredoc
+    fed to it. Returns ([(kind, lang)] per word, (kind, lang) for heredocs).
+    This is the one place that knows about specific programs."""
+    n = len(values)
+    labels = [("arg", None)] * n
+    i = 0
+    while i < n and (values[i] in _KEYWORDS or _ASSIGN_RE.match(values[i])):
+        labels[i] = ("op", None) if values[i] in _KEYWORDS else ("arg", None)
+        i += 1
+    if i < n and values[i] in _LIST_KEYWORDS:
+        labels[i] = ("op", None)
+        return labels, ("data", None)
+    while i < n and _cmd_name(values[i]) in _PREFIX_COMMANDS:
+        labels[i] = ("cmd", None)
+        i = _skip_prefix(values, i, _cmd_name(values[i]))
+    if i >= n:
+        return labels, ("data", None)
+
+    name = _cmd_name(values[i])
+    labels[i] = ("cmd", None)
+    rest = range(i + 1, n)
+
+    if name in ("wsl", "ssh", "plink"):
+        _label_rest(labels, i + 1, ("foreign", None))
+        return labels, ("foreign", None)
+
+    if name == "adb":
+        for k in rest:
+            if values[k] == "shell":
+                _label_rest(labels, k + 1, ("foreign", None))
+                return labels, ("foreign", None)
+        return labels, ("data", None)
+
+    if re.fullmatch(r"python[\d.]*|py", name):
+        k = i + 1
+        while k < n:
+            v = values[k]
+            if v == "-c":
+                if k + 1 < n:
+                    labels[k + 1] = ("code", "python")
+                return labels, ("data", None)
+            if v == "-m":
+                return labels, ("data", None)
+            if v == "-":
+                return labels, ("code", "python")
+            if v.startswith("-"):
+                k += 2 if v in ("-W", "-X", "-Q") else 1
+                continue
+            return labels, ("data", None)      # a script reads the heredoc
+        return labels, ("code", "python")
+
+    if name in ("bash", "sh", "zsh", "dash"):
+        k = i + 1
+        while k < n:
+            v = values[k]
+            if re.fullmatch(r"-[a-zA-Z]*c[a-zA-Z]*", v):
+                if k + 1 < n:
+                    labels[k + 1] = ("code", "bash")
+                return labels, ("data", None)
+            if v == "-s":
+                return labels, ("code", "bash")
+            if v.startswith("-"):
+                k += 2 if v in ("-o", "+o", "-O", "+O") else 1
+                continue
+            return labels, ("data", None)
+        return labels, ("code", "bash")
+
+    if name in ("pwsh", "powershell"):
+        for k in rest:
+            v = values[k].lower()
+            if v == "-c" or (len(v) >= 4 and "-command".startswith(v)):
+                _label_rest(labels, k + 1, ("code", "pwsh"))
+                if k + 1 < n and values[k + 1] == "-":
+                    return labels, ("code", "pwsh")
+                return labels, ("data", None)
+            if v in ("-f", "-file"):
+                break
+        return labels, ("data", None)
+
+    if name == "cmd":
+        for k in rest:
+            if values[k].lower() in ("/c", "/k", "//c", "//k"):
+                _label_rest(labels, k + 1, ("code", "cmd"))
+                break
+        return labels, ("data", None)
+
+    if name in ("echo", "printf"):
+        _label_rest(labels, i + 1, ("data", None))
+        return labels, ("data", None)
+
+    if name == "git":
+        k = i + 1
+        while k < n and values[k].startswith("-"):
+            k += 2 if values[k] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+        if k < n and values[k] in ("commit", "tag", "notes", "merge"):
+            k += 1
+            while k < n:
+                v = values[k]
+                if v == "--":
+                    break
+                if v in ("-m", "--message") or re.fullmatch(r"-[a-zA-Z]*m", v):
+                    if k + 1 < n:
+                        labels[k + 1] = ("data", None)
+                    k += 2
+                    continue
+                if v.startswith("--message=") or re.fullmatch(r"-m.+", v):
+                    labels[k] = ("data", None)
+                k += 1
+        return labels, ("data", None)
+
+    if name == "gh":
+        for k in rest:
+            v = values[k]
+            if v in ("--body", "-b", "--title", "-t", "--notes", "-n") and k + 1 < n:
+                labels[k + 1] = ("data", None)
+            elif v.startswith(("--body=", "--title=", "--notes=")):
+                labels[k] = ("data", None)
+        return labels, ("data", None)
+
+    if name in ("grep", "egrep", "fgrep", "rg", "sed", "awk", "gawk", "mawk"):
+        have_pattern = False
+        k = i + 1
+        while k < n:
+            v = values[k]
+            if v == "--":
+                if not have_pattern and k + 1 < n:
+                    labels[k + 1] = ("data", None)
+                break
+            if name in ("sed",) and v in ("-e", "--expression") or \
+               name not in ("sed", "awk", "gawk", "mawk") and \
+               (v in ("-e", "--regexp") or re.fullmatch(r"-[a-zA-Z]*e", v)):
+                if k + 1 < n:
+                    labels[k + 1] = ("data", None)
+                have_pattern = True
+                k += 2
+                continue
+            if v.startswith(("--regexp=", "--expression=")):
+                labels[k] = ("data", None)
+                have_pattern = True
+            elif v in ("-f", "--file"):
+                have_pattern = True
+                k += 2
+                continue
+            elif name in ("awk", "gawk", "mawk") and v in ("-F", "-v"):
+                k += 2
+                continue
+            elif name not in ("sed", "awk", "gawk", "mawk") and v in _PATTERN_VALUE_OPTS:
+                k += 2
+                continue
+            elif v.startswith("-") and v != "-":
+                pass
+            elif not have_pattern:
+                labels[k] = ("data", None)
+                have_pattern = True
+            k += 1
+        return labels, ("data", None)
+
+    return labels, ("data", None)
+
+
+class _Parser:
+    def __init__(self, text):
+        self.s = text
+        self.n = len(text)
+        self.labels = [None] * self.n
+        self.redirects = []
+        self.pending = []     # heredocs waiting for the end of their line
+        self.verbatim = False
+
+    def label(self, a, b, lab):
+        """Label positions [a, b) that no inner construct labeled yet."""
+        labels = self.labels
+        for k in range(a, min(b, self.n)):
+            if labels[k] is None:
+                labels[k] = lab
+
+    def label_word(self, word, kind, lang):
+        pos = word.start
+        for a, b, quote in word.pieces:
+            self.label(pos, a, (kind, lang, "", False))
+            self.label(a, b, (kind, lang, quote, False))
+            pos = b
+        self.label(pos, word.end, (kind, lang, "", False))
+
+    def finish(self, sc):
+        kinds, sc.heredoc = _classify_words([w.value for w in sc.words])
+        for word, (kind, lang) in zip(sc.words, kinds):
+            self.label_word(word, kind, lang)
+        for word in sc.targets:
+            self.label_word(word, "arg", None)
+
+    def scan_list(self, i, term, depth):
+        """Scan commands from i until term (")" or "`", None = end of text).
+        Returns the index after the terminator."""
+        s, n = self.s, self.n
+        sc = _SimpleCommand()
+        while i < n:
+            c = s[i]
+            if term is not None and c == term:
+                self.finish(sc)
+                self.label(i, i + 1, _OP)
+                return i + 1
+            if c in " \t\r":
+                self.label(i, i + 1, _OP)
+                i += 1
+                continue
+            if c == "\\" and s.startswith("\n", i + 1):
+                self.label(i, i + 2, _OP)
+                i += 2
+                continue
+            if c == "\n":
+                self.finish(sc)
+                sc = _SimpleCommand()
+                self.label(i, i + 1, _OP)
+                i = self.read_heredoc_bodies(i + 1)
+                continue
+            if c in ";|" or (c == "&" and not s.startswith(">", i + 1)):
+                j = i + 2 if s[i:i + 2] in ("&&", "||", ";;", "|&", ";&") else i + 1
+                self.finish(sc)
+                sc = _SimpleCommand()
+                self.label(i, j, _OP)
+                i = j
+                continue
+            if c == "#":
+                e = s.find("\n", i)
+                e = n if e < 0 else e
+                self.label(i, e, _COMMENT)
+                if depth == 0 and _VERBATIM_RE.fullmatch(s, i, e):
+                    self.verbatim = True
+                i = e
+                continue
+            m = _REDIRECT_RE.match(s, i)
+            if m and not (m.group() in ("<", ">") and s.startswith("(", m.end())):
+                i = self.read_redirect(m, sc, term, depth)
+                continue
+            if c == "(":
+                self.label(i, i + 1, _OP)
+                i = self.scan_list(i + 1, ")", depth + 1)
+                continue
+            word, j = self.read_word(i, term, depth)
+            if j == i:                      # nothing consumed: treat as an operator
+                self.label(i, i + 1, _OP)
+                i += 1
+                continue
+            sc.words.append(word)
+            i = j
+        self.finish(sc)
+        return n
+
+    def read_redirect(self, m, sc, term, depth):
+        s, n = self.s, self.n
+        op = m.group().lstrip("0123456789")
+        self.label(m.start(), m.end(), _OP)
+        i = m.end()
+        while i < n and s[i] in " \t":
+            self.label(i, i + 1, _OP)
+            i += 1
+        if i >= n or s[i] in "\n;&|" or s[i] == term:
+            return i
+        word, j = self.read_word(i, term, depth)
+        if j == i:
+            return i
+        if op in ("<<", "<<-"):
+            self.label(word.start, word.end, _OP)
+            quoted = bool(word.pieces) or "\\" in word.raw
+            self.pending.append((word.value, op == "<<-", quoted, sc))
+        else:
+            sc.targets.append(word)
+            self.redirects.append((m.start(), m.end(), word.start, word.end))
+        return j
+
+    def read_heredoc_bodies(self, i):
+        s, n = self.s, self.n
+        pending, self.pending = self.pending, []
+        for delim, strip_tabs, quoted, sc in pending:
+            kind, lang = sc.heredoc
+            lab = (kind, lang, "<<'" if quoted else "<<", True)
+            body_start = j = i
+            while True:
+                if j >= n:
+                    self.label(body_start, n, lab)
+                    i = n
+                    break
+                e = s.find("\n", j)
+                e = n if e < 0 else e
+                line = s[j:e]
+                if strip_tabs:
+                    line = line.lstrip("\t")
+                if line.rstrip("\r") == delim:
+                    self.label(body_start, j, lab)
+                    self.label(j, min(e + 1, n), _OP)
+                    i = min(e + 1, n)
+                    break
+                j = e + 1
+        return i
+
+    def read_word(self, i, term, depth):
+        s, n = self.s, self.n
+        start = i
+        pieces = []
+        value = []
+        while i < n:
+            c = s[i]
+            if c in " \t\r\n;&|<>":
+                if c in "<>" and i == start and s.startswith("(", i + 1):
+                    i = self.scan_list(i + 2, ")", depth + 1)     # process substitution
+                    continue
+                break
+            if term is not None and c == term:
+                break
+            if c == "\\":
+                value.append(s[i + 1:i + 2])
+                i += 2
+                continue
+            if c == "'":
+                e = s.find("'", i + 1)
+                e = n if e < 0 else e + 1
+                pieces.append((i, e, "'"))
+                value.append(s[i + 1:e - 1])
+                i = e
+                continue
+            if c == "$" and s.startswith("'", i + 1):
+                j = i + 2
+                while j < n and s[j] != "'":
+                    j += 2 if s[j] == "\\" else 1
+                e = min(j + 1, n)
+                pieces.append((i, e, "$'"))
+                value.append(s[i + 2:e - 1])
+                i = e
+                continue
+            if c == '"':
+                e = self.read_double_quoted(i + 1, depth)
+                pieces.append((i, e, '"'))
+                value.append(s[i + 1:e - 1])
+                i = e
+                continue
+            if c in "$`":
+                e = self.read_expansion(i, depth)
+                if e is not None:
+                    value.append(s[i:e])
+                    i = e
+                    continue
+            value.append(c)
+            i += 1
+        return _Word(start, i, pieces, "".join(value), s[start:i]), i
+
+    def read_double_quoted(self, i, depth):
+        """Index after the closing double quote (or the end of the text)."""
+        s, n = self.s, self.n
+        while i < n:
+            c = s[i]
+            if c == "\\":
+                i += 2
+                continue
+            if c == '"':
+                return i + 1
+            if c in "$`":
+                e = self.read_expansion(i, depth)
+                if e is not None:
+                    i = e
+                    continue
+            i += 1
+        return n
+
+    def read_expansion(self, i, depth):
+        """End of a $(...), `...`, ${...} or $((...)) starting at i, else None."""
+        s = self.s
+        if s.startswith("$((", i):
+            return self.skip_balanced(i + 3, "(", ")", 2)
+        if s.startswith("$(", i):
+            return self.scan_list(i + 2, ")", depth + 1)
+        if s.startswith("${", i):
+            return self.skip_balanced(i + 2, "{", "}", 1)
+        if s[i] == "`":
+            return self.scan_list(i + 1, "`", depth + 1)
+        return None
+
+    def skip_balanced(self, i, open_ch, close_ch, level):
+        s, n = self.s, self.n
+        while i < n:
+            if s[i] == open_ch:
+                level += 1
+            elif s[i] == close_ch:
+                level -= 1
+                if level == 0:
+                    return i + 1
+            i += 1
+        return n
+
+
+@functools.lru_cache(maxsize=64)
+def parse_command(cmd):
+    """Split cmd into contiguous typed spans (see the section comment)."""
+    p = _Parser(cmd)
+    p.scan_list(0, None, 0)
+    p.read_heredoc_bodies(p.n)
+    labels = p.labels
+    missing = [k for k, lab in enumerate(labels) if lab is None]
+    if missing:
+        raise RuntimeError(f"parse_command left positions {missing[:5]} unlabeled "
+                           f"in {cmd[:80]!r}")
+    spans, starts = [], []
+    k = 0
+    while k < p.n:
+        lab = labels[k]
+        e = k + 1
+        while e < p.n and labels[e] == lab:
+            e += 1
+        spans.append(Span(k, e, *lab))
+        starts.append(k)
+        k = e
+    return Parsed(cmd, tuple(spans), tuple(starts), tuple(p.redirects), p.verbatim)
 
 
 def fix_backslash_paths(cmd):
