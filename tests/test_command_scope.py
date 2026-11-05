@@ -217,11 +217,52 @@ class TestPython3WholeWord:
         ("ls *.py | xargs python3 -m py_compile", "ls *.py | xargs python -m py_compile"),
         ("(python3 x.py)", "(python x.py)"),
         ("python3.exe x.py", "python.exe x.py"),
-        ('python -c "import subprocess; subprocess.run([\'python3\', \'-V\'])"',
-         'python -c "import subprocess; subprocess.run([\'python\', \'-V\'])"'),
     ])
     def test_command_word_rewritten(self, cmd, expected):
         assert fbc.fix_python3(cmd) == expected
+
+
+# ---------------------------------------------------------------------------
+# #60 -- python3 is rewritten only where it runs as a command
+# ---------------------------------------------------------------------------
+
+@pytest.mark.usefixtures("python3_is_stub")
+class TestPython3CommandWordsOnly:
+    @pytest.mark.parametrize("cmd", [
+        "which -a python3 python 2>/dev/null",                   # seen in transcripts
+        "which python python3 7z wsl 2>&1 | head",               # seen in transcripts
+        "command -v python3",
+        "type python3",
+        'echo "python3 is the Store stub"',
+        'git commit -m "Rewrite python3 only as a command"',
+        'gh issue create --title "rewrite python3 only where it runs"',   # seen today
+        'grep -n "python3" README.md',
+        "awk '/python3 in/{p=1}' measure.txt",                    # seen today
+        'python -c "for m in re.finditer(r\'python3\', s): print(m)"',   # seen in transcripts
+        # Reverses a #45 test: never seen in transcripts, while the three
+        # real hits inside python code strings were all wrong.
+        'python -c "import subprocess; subprocess.run([\'python3\', \'-V\'])"',
+        "python - <<'PY'\nimport shutil; print(shutil.which('python3'))\nPY",
+        "ls  # python3 is not installed",
+    ])
+    def test_text_about_python3_untouched(self, cmd):
+        assert fbc.fix_python3(cmd) == cmd
+
+    @pytest.mark.parametrize("cmd, expected", [
+        ("sudo python3 x.py", "sudo python x.py"),
+        ("x=$(python3 -V)", "x=$(python -V)"),
+        ('echo "version: $(python3 -V)"', 'echo "version: $(python -V)"'),
+        ("echo `python3 -V`", "echo `python -V`"),
+        ("bash -c 'python3 x.py'", "bash -c 'python x.py'"),
+        ('bash -lc "cd /tmp && python3 x.py"', 'bash -lc "cd /tmp && python x.py"'),
+        ("python3 -I - <<'PY'\nprint('python3')\nPY", "python -I - <<'PY'\nprint('python3')\nPY"),
+    ])
+    def test_command_word_rewritten(self, cmd, expected):
+        assert fbc.fix_python3(cmd) == expected
+
+    def test_bash_code_argument_mentioning_python3_untouched(self):
+        cmd = "bash -c 'echo python3'"
+        assert fbc.fix_python3(cmd) == cmd
 
 
 class TestWslPathsWholeWord:

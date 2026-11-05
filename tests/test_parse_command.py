@@ -60,6 +60,14 @@ class TestCommandWords:
         assert kind_at(cmd, "a.txt") == "arg"
         assert kind_at(cmd, "python3") == "arg"
 
+    @pytest.mark.parametrize("cmd", ["command -v python3", "command -V python3"])
+    def test_command_lookup_argument_is_arg(self, cmd):
+        """command -v/-V looks a name up, like which; it does not run it (#60)."""
+        assert kind_at(cmd, "python3") == "arg"
+
+    def test_command_without_lookup_flag_runs_its_argument(self):
+        assert kind_at("command python3 x.py", "python3") == "cmd"
+
     def test_assignment_is_arg(self):
         assert kind_at('S="/c/x"; ls "$S"', "S=") == "arg"
 
