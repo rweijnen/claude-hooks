@@ -86,7 +86,7 @@ Each line is a JSON object with:
 | Field | Description |
 |-------|-------------|
 | `time` | Human-readable timestamp (`2026-02-18 13:15:51`) |
-| `type` | `autofix` (tier 1, silently applied) or `suggest` (tier 2, blocked) |
+| `type` | `autofix` (tier 1, silently applied), `suggest` (tier 2, blocked) or `verbatim` (see [Escape hatch](#escape-hatch-hookverbatim)) |
 | `fix` | What was fixed, or the check ID that blocked |
 | `cwd` | Working directory (identifies the project) |
 | `original` | The original command |
@@ -139,6 +139,18 @@ The hooks are written for this setting. `doubled_flags` only rewrites `//flag` t
 ```
 
 Claude Code does not set this itself. Only `*` switches conversion off completely; a list of prefixes leaves the rest converted, and the hooks then treat conversion as on.
+
+## Escape hatch: `# hook:verbatim`
+
+When a rewrite is wrong, for example because the command asks about `python3` rather than running it, Claude can run the command again with a trailing comment:
+
+```
+which -a python3  # hook:verbatim
+```
+
+The hook then makes no change itself. If it would have changed something, it asks you first: the permission prompt lists each skipped rewrite (`python3 -> python`), and the command runs unmodified only if you approve. If nothing would have changed, the marker does nothing. Blocking checks still apply, and so does the block on a real `> nul` redirect, because that creates a file Windows cannot delete.
+
+Only a real top-level comment counts; the marker inside quotes, a heredoc or a code string is ignored, so documentation that mentions it does not trigger it. Claude learns about the marker from the hook's own message after a rewrite. Every use is logged with `"type": "verbatim"` and `"decision": "noop"` or `"ask"`.
 
 ## Updating
 

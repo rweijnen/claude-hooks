@@ -317,8 +317,11 @@ class TestVerbatim:
         assert out["permissionDecision"] == "ask"
 
     def test_pwsh_quoting_block_becomes_a_question(self, hooks_dir):
-        cmd = """pwsh -NoProfile -Command "Write-Host $x 'y'\"""" + MARK
-        out = hook_output(run_hook(hooks_dir, "fix_bash_command.py", bash(cmd)))
+        # pwsh_noprofile is off so the quoting check sees pwsh -Command directly;
+        # in the default chain it never fires (#58).
+        cmd = """pwsh -Command "Write-Host $x 'y'\"""" + MARK
+        out = hook_output(run_hook(hooks_dir, "fix_bash_command.py", bash(cmd),
+                                   config={"pwsh_noprofile": False}))
         assert out["permissionDecision"] == "ask"
         assert "pwsh" in out["permissionDecisionReason"]
 
