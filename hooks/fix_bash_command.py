@@ -1091,13 +1091,50 @@ def _reserved_stem(target):
     return stem if stem in WINDOWS_RESERVED_NAMES else None
 
 
-def _real_nul_redirect(cmd):
-    """True if cmd redirects output to nul (a file named nul in Git Bash),
-    as opposed to mentioning '> nul' inside text."""
+def _shell_scripts(cmd, depth=0):
+    """Yield (offset, parsed) for cmd and for every script inside it that a
+    POSIX shell runs: a bash -c argument, the quoted arguments of wsl, ssh,
+    plink or adb shell, and a heredoc fed to bash or to such a command.
+    Nested scripts (wsl -e bash -c "ssh pi '...'") are followed 3 levels deep.
+    Unquoted foreign words need no descent: bash already parsed them."""
+    parsed = parse_command(cmd)
+    yield 0, parsed
+    if depth >= 3:
+        return
+    for span in parsed.spans:
+        if span.kind != "foreign" and not (span.kind == "code" and span.lang == "bash"):
+            continue
+        start, end = span.start, span.end
+        if span.heredoc:
+            pass
+        elif span.quote in ("'", '"') and end - start >= 2 and cmd[start] == cmd[end - 1] == span.quote:
+            start, end = start + 1, end - 1
+        else:
+            continue
+        for offset, inner in _shell_scripts(cmd[start:end], depth + 1):
+            yield start + offset, inner
+
+
+def _nul_redirects(cmd):
+    """(operator_end, target_end) of every output redirect to nul (any case,
+    optionally quoted) that a shell performs, at any nesting level. In Git
+    Bash and in WSL on a Windows disk this creates a file named nul that
+    Windows tools cannot delete; a Linux host has /dev/null (#62)."""
     if "nul" not in cmd.lower():
-        return False
-    return any(">" in cmd[op0:op1] and _reserved_stem(cmd[t0:t1]) == "nul"
-               for op0, op1, t0, t1 in parse_command(cmd).redirects)
+        return []
+    found = set()
+    for offset, parsed in _shell_scripts(cmd):
+        text = parsed.text
+        for op0, op1, t0, t1 in parsed.redirects:
+            if ">" in text[op0:op1] and text[t0:t1].strip("\"'").lower() == "nul":
+                found.add((offset + op1, offset + t1))
+    return sorted(found)
+
+
+def _real_nul_redirect(cmd):
+    """True if cmd redirects output to nul somewhere a shell runs it, as
+    opposed to mentioning '> nul' inside text."""
+    return bool(_nul_redirects(cmd))
 
 
 def check_reserved_names(cmd):
@@ -1194,17 +1231,15 @@ def check_dir_in_pwsh(cmd):
 def fix_nul_redirect(cmd):
     """Fix A: > nul -> > /dev/null (case-insensitive: NUL, Nul, nul)
 
-    Heredoc bodies are file content (e.g. a .bat file, where nul is
-    correct) and are left alone.
+    Only real redirects (#62): at the top level, inside $(...), and inside
+    the scripts that bash -c, wsl and ssh run, including heredocs fed to
+    such a shell. Left alone where nul is right or only text: cmd /c (cmd.exe
+    needs nul), python code, PowerShell, echo/JSON payloads, commit
+    messages, heredocs written to a file (a .bat file) and comments.
     """
-    heredocs, _ = _shell_spans(cmd)
-    return _sub_outside(
-        r"(?<!/dev/)((?:&|[012])?>)\s*nul\b",
-        r"\1 /dev/null",
-        cmd,
-        heredocs,
-        flags=re.IGNORECASE,
-    )
+    for op_end, target_end in reversed(_nul_redirects(cmd)):
+        cmd = cmd[:op_end] + " /dev/null" + cmd[target_end:]
+    return cmd
 
 
 _WINDOWS_ENV_VARS = {

@@ -320,11 +320,13 @@ class TestVerbatim:
         assert "> nul" not in out["permissionDecisionReason"]
 
     @pytest.mark.parametrize("cmd", [
-        "wsl -e sh -c 'make > nul'",
-        "ssh pi bash <<'EOF'\nls > nul\nEOF",
+        "wsl -e sh -c 'make > nul'" + MARK,
+        # on a heredoc command the marker goes on the first line: after EOF
+        # it would make the terminator line "EOF  # ...", which ends nothing
+        "ssh pi bash <<'EOF'" + MARK + "\nls > nul\nEOF",
     ])
     def test_nul_redirect_in_remote_script_still_blocked(self, hooks_dir, cmd):
-        proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd + MARK))
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd))
         assert proc.returncode == 2
 
     def test_pwsh_quoting_block_becomes_a_question(self, hooks_dir):
