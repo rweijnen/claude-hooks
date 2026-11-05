@@ -22,6 +22,19 @@ from fix_bash_command import (
 # fix_doubled_flags (tier 1 auto-fix)
 # ---------------------------------------------------------------------------
 
+@pytest.fixture
+def conversion_off(monkeypatch):
+    """MSYS2 argument conversion disabled: /flag reaches Windows programs as is."""
+    monkeypatch.setenv("MSYS2_ARG_CONV_EXCL", "*")
+
+
+@pytest.fixture
+def conversion_default(monkeypatch):
+    """Git Bash's default: /flag is converted to a path, //flag is the escape."""
+    monkeypatch.delenv("MSYS2_ARG_CONV_EXCL", raising=False)
+
+
+@pytest.mark.usefixtures("conversion_off")
 class TestFixDoubledFlags:
     def test_cmd_c_doubled(self):
         assert fix_doubled_flags("cmd //c build.bat") == "cmd /c build.bat"
@@ -63,6 +76,25 @@ class TestFixDoubledFlags:
         """The old check_ function returned None; fix_ must always return a string."""
         result = fix_doubled_flags("echo hello")
         assert isinstance(result, str)
+
+
+@pytest.mark.usefixtures("conversion_default")
+class TestDoubledFlagsDefaultConversion:
+    """#53: with Git Bash's default conversion, //flag is correct and /flag breaks."""
+
+    @pytest.mark.parametrize("cmd", [
+        "cmd //c build.bat",
+        'tasklist //fi "STATUS eq RUNNING"',
+        "ipconfig //all",
+        "cmd //c //v build.bat",
+    ])
+    def test_doubled_flags_left_alone(self, cmd):
+        assert fix_doubled_flags(cmd) == cmd
+
+    @pytest.mark.parametrize("value", ["", "/c;/fi"])
+    def test_partial_exclusion_is_not_conversion_off(self, monkeypatch, value):
+        monkeypatch.setenv("MSYS2_ARG_CONV_EXCL", value)
+        assert fix_doubled_flags("cmd //c x.bat") == "cmd //c x.bat"
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +168,7 @@ class TestFixCmdCd:
 # Integration: doubled_flags + cmd_cd together
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("conversion_off")
 class TestDoubledFlagsThenCmdCd:
     """Verify the pipeline: fix_doubled_flags runs first, then fix_cmd_cd."""
 

@@ -269,17 +269,27 @@ def check_git_commit_emoji(cmd):
               "git_commit_emoji", cmd)
 
 
-def fix_doubled_flags(cmd):
-    """Fix E: auto-fix unnecessary // flag doubling for Windows commands.
+def _msys_arg_conversion_off():
+    """True when MSYS2 argument conversion is off for every argument.
 
-    Testing on this system confirmed:
-      - tasklist /fi   -> works
-      - tasklist //fi  -> FAILS
-      - ipconfig /all  -> works
-      - ipconfig //all -> FAILS
-    Single-slash flags are NOT converted by MSYS2 for short flag names.
-    Doubled slashes break the commands.
+    With MSYS2_ARG_CONV_EXCL=* a Windows flag such as /fi reaches the
+    program as is and //fi breaks it. With Git Bash's default conversion it
+    is the exact opposite: /fi becomes C:/Program Files/Git/fi and //fi is
+    the escape. Only "*" switches conversion off completely; a list of
+    prefixes leaves other arguments converted.
     """
+    return os.environ.get("MSYS2_ARG_CONV_EXCL") == "*"
+
+
+def fix_doubled_flags(cmd):
+    """Fix E: //flag -> /flag for Windows commands, when conversion is off.
+
+    Measured with MSYS2_ARG_CONV_EXCL=*: tasklist /fi and ipconfig /all
+    work, tasklist //fi and ipconfig //all fail. Under Git Bash's default
+    conversion //flag is correct, so the command is left alone (#53).
+    """
+    if not _msys_arg_conversion_off():
+        return cmd
     # Skip URLs
     if re.search(r"https?://", cmd):
         return cmd
@@ -1206,11 +1216,11 @@ def fix_windows_env_vars(cmd):
 def fix_msys2_drive_paths(cmd):
     """Fix G: /c/Work/... -> C:/Work/...
 
-    MSYS2 drive mount paths (/c/, /d/, etc.) sometimes fail to convert
-    when passed to Windows executables like python.exe. Using C:/ style
-    is always safe for both MSYS2 tools and Windows executables.
-    (Claude Code sets MSYS2_ARG_CONV_EXCL=*, so Windows executables get
-    /c/... literally.)
+    With MSYS2_ARG_CONV_EXCL=* (a user setting, see the README) Windows
+    executables like python.exe get /c/... literally and read it as
+    C:\\c\\...; under Git Bash's default conversion it is converted for
+    them. C:/ style works for MSYS2 tools and Windows executables under
+    either setting, so the rewrite is always safe.
 
     Paths in the arguments of wsl/ssh/adb shell belong to the other system
     and are left alone. Heredoc bodies are still rewritten: a Python
