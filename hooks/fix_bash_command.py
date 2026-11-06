@@ -344,75 +344,7 @@ def _in_heredoc(cmd, pos):
     return False
 
 
-# A command whose arguments run on another system (Linux via WSL, a remote
-# host via ssh, an Android device via adb shell). Matched at the start of a
-# word, optionally with a path prefix (C:/Windows/System32/wsl.exe).
-_FOREIGN_CMD_RE = re.compile(
-    r"(?:[^\s'\";&|]*[/\\])?(?:wsl|ssh|plink)(?:\.exe)?\s"
-    r"|adb(?:\.exe)?(?:\s+-[de]|\s+-s\s+\S+)*\s+shell\b",
-    re.IGNORECASE,
-)
-# Same, but the program path is quoted: "C:\...\OpenSSH\ssh.exe" host ...
-_QUOTED_FOREIGN_CMD_RE = re.compile(
-    r"\"[^\"]*[/\\](?:wsl|ssh|plink)(?:\.exe)?\"\s",
-    re.IGNORECASE,
-)
-_SEGMENT_SEPARATORS = ";&|\n"
 _WSL_ANYWHERE_RE = re.compile(r"(?:^|[\s/\\\"'(;&|])wsl(?:\.exe)?\"?\s", re.IGNORECASE)
-
-
-def _shell_spans(cmd):
-    """Return (heredoc_spans, foreign_spans) as lists of (start, end).
-
-    heredoc_spans are heredoc bodies. foreign_spans cover the arguments of
-    a wsl/ssh/plink/adb-shell command up to the end of that simple command
-    (the next unquoted ; & | or newline), plus any heredoc body fed to it.
-    Quote state is tracked so separators inside quotes do not end a span,
-    and heredoc bodies are skipped so their apostrophes do not confuse it.
-    """
-    heredocs = [(m.start(2), m.end(2)) for m in _HEREDOC_RE.finditer(cmd)]
-    body_at = {start: end for start, end in heredocs}
-    foreign = []
-    fstart = None
-    quote = None
-    word_start = True
-    i = 0
-    n = len(cmd)
-    while i < n:
-        ch = cmd[i]
-        if quote:
-            if ch == "\\" and quote == '"':
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-            i += 1
-            continue
-        if ch == "\\":
-            i += 2
-            word_start = False
-            continue
-        if ch in _SEGMENT_SEPARATORS:
-            body_end = body_at.get(i + 1) if ch == "\n" else None
-            if fstart is not None:
-                foreign.append((fstart, body_end if body_end else i))
-                fstart = None
-            i = body_end if body_end else i + 1
-            word_start = True
-            continue
-        if word_start and fstart is None:
-            m = _FOREIGN_CMD_RE.match(cmd, i) or _QUOTED_FOREIGN_CMD_RE.match(cmd, i)
-            if m:
-                fstart = m.end()
-                i = m.end()
-                continue
-        if ch in "'\"":
-            quote = ch
-        word_start = ch.isspace() or ch == "("
-        i += 1
-    if fstart is not None:
-        foreign.append((fstart, n))
-    return heredocs, foreign
 
 
 # A trigger must be a whole word, not part of a longer file name, path, URL
@@ -421,15 +353,6 @@ def _shell_spans(cmd):
 _NAME_OR_PATH_CHAR = r"[\w.~:/\\-]"
 _WORD_BEFORE = r"(?<!" + _NAME_OR_PATH_CHAR + r")"
 _WORD_AFTER = r"(?!" + _NAME_OR_PATH_CHAR + r")"
-
-
-def _sub_outside(pattern, repl, cmd, spans, flags=0):
-    """re.sub that leaves matches starting inside any of spans untouched."""
-    def replace(m):
-        if any(a <= m.start() < b for a, b in spans):
-            return m.group(0)
-        return repl(m) if callable(repl) else m.expand(repl)
-    return re.sub(pattern, replace, cmd, flags=flags)
 
 
 # ---------------------------------------------------------------------------
@@ -1004,37 +927,42 @@ def parse_command(cmd):
                   tuple(p.heredoc_files))
 
 
+_BACKSLASH_PATH_RE = re.compile(r"(?<![A-Za-z])[A-Za-z]:\\+[A-Za-z][^\s'\"]*")
+
+
 def fix_backslash_paths(cmd):
-    r"""Fix F: rewrite Windows backslash paths to forward slashes.
+    r"""Fix F: rewrite Windows backslash paths to forward slashes (#74).
 
-    Matches drive-letter patterns like C:\Users, C:\\Users, C:\\\\Users
-    outside single-quoted strings and heredocs.  Any run of backslashes
-    is collapsed to a single forward slash -- no matter how many times
-    Claude doubled them.
+    Matches drive-letter paths like C:\Users, C:\\Users, C:\\\\Users and
+    collapses any run of backslashes to a single forward slash, no matter
+    how many times Claude doubled them. The drive letter must be at a word
+    boundary (not mid-word like HKCU\Software).
 
-    The drive letter must be at a word boundary (not mid-word like
-    HKCU\Software) to avoid false positives on registry paths.
-
-    Forward slashes work for virtually all Windows executables, so this is
-    safe as a silent auto-fix.  If a tool truly requires backslashes, use
-    single quotes (the check skips single-quoted content).
+    Rewritten in command words and arguments whatever the quoting: forward
+    slashes work for virtually all Windows executables, single quotes
+    included (the step C measurement on #48: 45 SP='C:\...' rewrites, all
+    harmless). In code (python -c, pwsh, cmd /c, heredocs fed to an
+    interpreter) only where bash processes backslashes: unquoted, double
+    quotes, unquoted heredocs. Code bash passes on byte for byte (single
+    quotes, quoted heredocs) is left alone: a backslash path is valid there
+    and may be compared or replaced as a string. Also left alone: text
+    (echo, commit messages, grep/sed patterns), heredocs written to a file
+    (a .bat needs its backslashes), comments and wsl/ssh/adb arguments. A
+    tool that truly needs backslashes is run with # hook:verbatim.
     """
-    stripped = _strip_heredocs(cmd)
-    needs_fix = False
-    for m in re.finditer(r"(?<![A-Za-z])([A-Za-z]):\\+([A-Za-z])", stripped):
-        # Skip if inside single quotes (count odd quotes before match)
-        before = stripped[:m.start()]
-        if before.count("'") % 2 == 1:
-            continue
-        needs_fix = True
-        break
-    if not needs_fix:
+    if ":\\" not in cmd:
         return cmd
-    return re.sub(
-        r"(?<![A-Za-z])[A-Za-z]:\\+[^\s'\"]*",
-        lambda m: re.sub(r"\\+", "/", m.group(0)),
-        cmd,
-    )
+    return _sub_where(_BACKSLASH_PATH_RE, lambda m: re.sub(r"\\+", "/", m.group(0)),
+                      cmd, _backslash_path_position)
+
+
+def _backslash_path_position(parsed, pos):
+    span = parsed.at(pos)
+    if span is None:
+        return False
+    if span.kind in ("cmd", "arg"):
+        return True
+    return span.kind == "code" and span.expands
 
 
 def check_unc_paths(cmd):
