@@ -40,6 +40,7 @@ _DEFAULTS = {
     "wsl_paths": True,
     "reserved_names": True,
     "python3": True,
+    "python_isolated_utf8": True,
     "dir_windows_flags": True,
     "doubled_flags": True,
     "dir_in_pwsh": True,
@@ -1601,6 +1602,71 @@ def fix_python3(cmd):
     return _sub_where(_PYTHON3_RE, "python", cmd, _runs_as_command)
 
 
+# A bare python / python.exe word: not a path (C:/Python311/python.exe runs
+# an interpreter whose version this hook does not know), not py, python3.
+_BARE_PYTHON_RE = re.compile(r"(?<![\w./\\:-])python(?:\.exe)?(?![\w.-])")
+_OPTION_WORD_RE = re.compile(r"[ \t]+(\S+)")
+
+
+def _utf8_mode_is_default():
+    """Python 3.15 makes UTF-8 mode the default (PEP 686)."""
+    return sys.version_info >= (3, 15)
+
+
+def _isolated_without_utf8(cmd, pos):
+    """Read python's options from pos: True if -I or -E is among them and
+    no -X utf8 (or utf8=N) is. Options end at the first non-option word,
+    -, --, or -c / -m (what follows belongs to the code or module)."""
+    isolated = False
+    while True:
+        m = _OPTION_WORD_RE.match(cmd, pos)
+        if not m:
+            return isolated
+        word = m.group(1)
+        pos = m.end()
+        if not word.startswith("-") or word in ("-", "--"):
+            return isolated
+        if word.startswith("--"):
+            if word == "--check-hash-based-pycs":
+                m = _OPTION_WORD_RE.match(cmd, pos)
+                pos = m.end() if m else pos
+            continue
+        letters = word[1:]
+        for k, ch in enumerate(letters):
+            if ch in "XW":
+                value = letters[k + 1:]
+                if not value:
+                    m = _OPTION_WORD_RE.match(cmd, pos)
+                    value = m.group(1) if m else ""
+                    pos = m.end() if m else pos
+                if ch == "X" and (value == "utf8" or value.startswith("utf8=")):
+                    return False
+                break
+            if ch in "cm":
+                return isolated
+            if ch in "IE":
+                isolated = True
+
+
+def fix_python_isolated_utf8(cmd):
+    """Add -X utf8 to python -I / -E when PYTHONUTF8=1 is set (#56).
+
+    Isolated mode implies -E, which ignores every PYTHON* variable, so the
+    user's PYTHONUTF8=1 is lost and printing non-ASCII to a pipe crashes
+    with UnicodeEncodeError. -X options are not affected by -E. Only a bare
+    python command word is changed: it is the interpreter this hook runs on,
+    so sys.version_info tells whether UTF-8 mode is already the default.
+    """
+    if "python" not in cmd or os.environ.get("PYTHONUTF8") != "1" or _utf8_mode_is_default():
+        return cmd
+
+    def add(m):
+        if _isolated_without_utf8(m.string, m.end()):
+            return m.group(0) + " -X utf8"
+        return m.group(0)
+    return _sub_where(_BARE_PYTHON_RE, add, cmd, _runs_as_command)
+
+
 # Mapping of Windows cmd.exe 'dir' flags to GNU 'ls' equivalents
 _DIR_FLAG_MAP = {
     "b": "-1",   # bare names only, one per line
@@ -1892,6 +1958,8 @@ _FIXES = [
     ("msys2_drive_paths", fix_msys2_drive_paths, "converted MSYS2 drive paths to Windows style"),
     ("wsl_paths", fix_wsl_paths, "converted /mnt/ WSL paths to Windows style"),
     ("python3", fix_python3, "replaced python3 with python"),
+    ("python_isolated_utf8", fix_python_isolated_utf8,
+     "added -X utf8 to python -I/-E, which ignores PYTHONUTF8"),
     ("dir_windows_flags", fix_dir_windows_flags, "converted Windows dir /flags to ls equivalent"),
     ("bare_pwsh_cmdlet", fix_bare_pwsh_cmdlet, "wrapped bare PowerShell cmdlet with pwsh -NoProfile -Command"),
     ("pwsh_noprofile", fix_pwsh_noprofile, "inserted -NoProfile into pwsh invocation"),

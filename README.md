@@ -8,6 +8,7 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 |-----|---------|------|--------|
 | Null redirect | `> nul`, `2> nul` | Auto-fix | Rewrite to `> /dev/null` (not inside heredoc bodies, e.g. a `.bat` file being written) |
 | Python3 alias | `python3 ...` | Auto-fix | Rewrite to `python` only when `python3` is not a real interpreter on this machine (missing, or the Microsoft Store stub); not inside wsl/ssh/adb shell arguments or heredoc bodies |
+| Isolated Python | `python -I x.py` with `PYTHONUTF8=1` | Auto-fix | Add `-X utf8`, because `-I` ignores `PYTHONUTF8` (see [below](#recommended-setting-pythonutf8)); only a bare `python` command, before Python 3.15 |
 | PowerShell `$` | `pwsh -Command "... $x ..."` | Block | Bash expands `$` before pwsh runs, and only the caller knows which shell each `$` is for. Passes when each one is marked: `\$x` for a pwsh variable (or single-quote the whole script), a variable assigned earlier in the same command for bash, `\$env:NAME` for an environment value. Never rewritten |
 | MSYS2 drive paths | `/c/Work/...` | Auto-fix | Rewrite to `C:/Work/...`; not inside wsl/ssh/adb shell arguments |
 | Reserved names | `> con`, `> prn`, `touch aux.txt` | Block | Reject -- undeletable files |
@@ -114,6 +115,8 @@ Turning on Python's UTF-8 mode for everything Claude Code starts fixes this. Add
 
 It takes effect in running sessions without a restart. Side effect: `open()` without an `encoding` argument then reads and writes UTF-8 instead of cp1252, which is usually what you want, but matters if you have scripts that read legacy cp1252 files. `install.py` does not set this for you because it affects every Python process, not just the hooks. Python 3.15 makes UTF-8 mode the default ([PEP 686](https://peps.python.org/pep-0686/)), so this is only needed on 3.14 and older.
 
+`python -I` (isolated mode, which Claude uses for scripts that read downloaded data) implies `-E` and ignores every `PYTHON*` variable, `PYTHONUTF8` included, so such a script crashes anyway. `-X` options are not affected: `python -I -X utf8` works. When `PYTHONUTF8=1` is set, the `python_isolated_utf8` fix adds `-X utf8` to `python -I` / `python -E` for you (on Python before 3.15).
+
 ## Recommended setting: MSYS2_ARG_CONV_EXCL
 
 When Git Bash starts a native Windows program, MSYS2 converts arguments that look like POSIX paths into Windows paths. That helps with `/c/Users/...`, but it also hits anything else that starts with a slash: Windows flags and paths meant for another system. `MSYS2_ARG_CONV_EXCL=*` switches that conversion off. What a native program receives:
@@ -181,6 +184,7 @@ Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true
 | `nul_redirect` | Rewrite `> nul` to `> /dev/null` | on | auto-fix |
 | `msys2_drive_paths` | Rewrite `/c/...` to `C:/...` | on | auto-fix |
 | `python3` | Rewrite `python3` to `python` when `python3` is not a real interpreter | on | auto-fix |
+| `python_isolated_utf8` | Add `-X utf8` to `python -I` / `-E` when `PYTHONUTF8=1` is set (Python before 3.15) | on | auto-fix |
 | `dir_windows_flags` | Rewrite `dir /b` to `ls -1` | on | auto-fix |
 | `doubled_flags` | Rewrite `//flag` to `/flag` when `MSYS2_ARG_CONV_EXCL=*` (under default conversion `//flag` is correct) | on | auto-fix |
 | `backslash_paths` | Rewrite `C:\` to `C:/` | on | auto-fix |
