@@ -1445,9 +1445,18 @@ def fix_msys2_drive_paths(cmd):
 
 def _drive_path_position(parsed, pos):
     """True where an MSYS2 drive path is used: a command word, an argument,
-    or code (code heredocs included). Not data, comments or foreign text."""
+    or code (code heredocs included). Not data, comments or foreign text.
+
+    In code, a bare drive root with nothing after it ("The /c/ path fix" in
+    a Python string) is prose, not a path, so it needs a path character
+    after the "/c/" (#77). As a whole argument, `ls /c/` is a real path."""
     span = parsed.at(pos)
-    return span is not None and span.kind in ("cmd", "arg", "code")
+    if span is None or span.kind not in ("cmd", "arg", "code"):
+        return False
+    if span.kind != "code":
+        return True
+    after = parsed.text[pos + 3:pos + 4]
+    return after != "" and not after.isspace() and after not in "\"'\\`"
 
 
 def _python3_is_genuine():
