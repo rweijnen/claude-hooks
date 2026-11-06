@@ -304,6 +304,50 @@ class TestPython3CommandWordsOnly:
         assert fbc.fix_python3(cmd) == cmd
 
 
+# ---------------------------------------------------------------------------
+# #66 -- /mnt/c/ inside text is left alone
+# ---------------------------------------------------------------------------
+
+class TestWslPathsSkipText:
+    @pytest.mark.parametrize("cmd", [
+        'grep -c "S=.*/mnt/c/Users" replay.txt',                 # seen in a transcript
+        # (no "wsl" in these texts: any mention of wsl skips the fix entirely)
+        'echo "Linux sees this disk as /mnt/c/Users"',
+        'git commit -m "Leave /mnt/c/ paths in text alone"',
+        "sed 's#/mnt/c/#C:/#' notes.txt",
+        "ls  # /mnt/c/Users is the Linux view",
+    ])
+    def test_text_untouched(self, cmd):
+        assert fbc.fix_wsl_paths(cmd) == cmd
+
+    @pytest.mark.parametrize("cmd, expected", [
+        ("ls /mnt/c/Users", "ls C:/Users"),
+        ("cd /mnt/d/Work && make", "cd D:/Work && make"),
+        ("python -c \"open('/mnt/c/x.txt').read()\"", "python -c \"open('C:/x.txt').read()\""),
+        ("grep -n pattern /mnt/c/x.txt", "grep -n pattern C:/x.txt"),
+    ])
+    def test_paths_rewritten(self, cmd, expected):
+        assert fbc.fix_wsl_paths(cmd) == expected
+
+
+# ---------------------------------------------------------------------------
+# #67 -- cmd_cd keeps every line after the first
+# ---------------------------------------------------------------------------
+
+class TestCmdCdKeepsLaterLines:
+    def test_commit_message_body_kept(self):
+        cmd = ('cd C:/Work/project && cmd /c "native\\\\build.bat" > build/log.txt 2>&1; '
+               'git commit -q -m "Subject line\n\nBody line 1\nBody line 2"')
+        out = fbc.fix_cmd_cd(cmd)
+        assert out.startswith('cmd /c "cd /d C:/Work/project && native\\\\build.bat"')
+        assert out.endswith('-m "Subject line\n\nBody line 1\nBody line 2"')
+
+    def test_following_commands_kept(self):
+        cmd = "cd C:/Work/x && cmd /c build.bat > log.txt 2>&1\necho done\ngit status"
+        assert fbc.fix_cmd_cd(cmd) == ('cmd /c "cd /d C:/Work/x && build.bat" > log.txt 2>&1'
+                                       "\necho done\ngit status")
+
+
 class TestWslPathsWholeWord:
     def test_mnt_inside_longer_path_untouched(self):
         cmd = "ls /srv/mnt/d/backup"
