@@ -8,7 +8,7 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 |-----|---------|------|--------|
 | Null redirect | `> nul`, `2> nul` | Auto-fix | Rewrite to `> /dev/null` (not inside heredoc bodies, e.g. a `.bat` file being written) |
 | Python3 alias | `python3 ...` | Auto-fix | Rewrite to `python` only when `python3` is not a real interpreter on this machine (missing, or the Microsoft Store stub); not inside wsl/ssh/adb shell arguments or heredoc bodies |
-| PowerShell quoting | `pwsh -Command "$..."` | Auto-fix | Swap to single quotes |
+| PowerShell `$` | `pwsh -Command "... $x ..."` | Block | Bash expands `$` before pwsh runs, and only the caller knows which shell each `$` is for. Passes when each one is marked: `\$x` for a pwsh variable (or single-quote the whole script), a variable assigned earlier in the same command for bash, `\$env:NAME` for an environment value. Never rewritten |
 | MSYS2 drive paths | `/c/Work/...` | Auto-fix | Rewrite to `C:/Work/...`; not inside wsl/ssh/adb shell arguments |
 | Reserved names | `> con`, `> prn`, `touch aux.txt` | Block | Reject -- undeletable files |
 | Commit messages | AI Co-Authored-By trailers, "Generated with" AI footers, emoji | Block (opt-in) | Reject with a message naming the check |
@@ -182,7 +182,6 @@ Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true
 | `msys2_drive_paths` | Rewrite `/c/...` to `C:/...` | on | auto-fix |
 | `python3` | Rewrite `python3` to `python` when `python3` is not a real interpreter | on | auto-fix |
 | `dir_windows_flags` | Rewrite `dir /b` to `ls -1` | on | auto-fix |
-| `pwsh_quoting` | Fix pwsh double-quote to single-quote | on | auto-fix |
 | `doubled_flags` | Rewrite `//flag` to `/flag` when `MSYS2_ARG_CONV_EXCL=*` (under default conversion `//flag` is correct) | on | auto-fix |
 | `backslash_paths` | Rewrite `C:\` to `C:/` | on | auto-fix |
 | `bare_pwsh_cmdlet` | Wrap bare PS cmdlets with `pwsh -NoProfile -Command` | on | auto-fix |
@@ -194,6 +193,7 @@ Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true
 | `unc_paths` | Block `\\server` UNC paths | on | block |
 | `reserved_names` | Block redirects to CON, PRN, etc. | on | block |
 | `dir_in_pwsh` | Block `dir /flag` inside pwsh | on | block |
+| `pwsh_quoting` | Block a `$` in `pwsh -Command` code that bash expands, unless marked as pwsh (`\$x`) or bash (assigned in the same command) | on | block |
 | `powershell_legacy` | Block `powershell.exe`, suggest pwsh | on | block |
 | `wsl_invocation` | Block `wsl` commands when WSL is not installed | on | block |
 | `git_commit_attribution` | Block Co-Authored-By trailers that name an AI assistant (human co-authors pass) | off | block |

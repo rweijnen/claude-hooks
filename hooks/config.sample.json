@@ -29,7 +29,7 @@
   "_comment_dir_in_pwsh": "Block: pwsh -Command 'dir /b' -> suggest Get-ChildItem (PowerShell dir != cmd dir)",
   "dir_in_pwsh": true,
 
-  "_comment_pwsh_quoting": "Auto-fix: pwsh -Command \"$var\" -> pwsh -Command '$var' (prevent bash $ expansion)",
+  "_comment_pwsh_quoting": "Block: a $ in pwsh -Command code that bash expands, unless marked: \\$x for pwsh, or a variable assigned earlier in the same command for bash",
   "pwsh_quoting": true,
 
   "_comment_powershell_legacy": "Block: powershell.exe -> suggest pwsh (full path allowed for PS 5.1)",

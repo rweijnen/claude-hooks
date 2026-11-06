@@ -1221,6 +1221,113 @@ def check_dir_in_pwsh(cmd):
     )
 
 
+# A $ that bash expands: ${...}, a name (with pwsh's :scope suffix kept for
+# the message), a special parameter, or $( command substitution.
+_BASH_EXPANSION_RE = re.compile(r"\$(?:\{[^}]*\}|[A-Za-z_]\w*(?::\w+)?|[0-9?$!#@*-]|\()")
+_NAME_RE = re.compile(r"[A-Za-z_]\w*")
+
+
+def _bash_expansions(text):
+    """(position, token) for each unescaped $-expansion or backtick in text,
+    read as bash reads an unquoted word, a double-quoted string or an
+    unquoted heredoc body."""
+    found = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "`":
+            found.append((i, "`"))
+        elif ch == "$":
+            m = _BASH_EXPANSION_RE.match(text, i)
+            if m:
+                found.append((i, m.group(0)))
+                i = m.end()
+                continue
+        i += 1
+    return found
+
+
+def _bash_assigned_names(parsed, before):
+    """Names the command assigns before position `before`: NAME=value words
+    (also after export/local/declare), for NAME in, and read NAME."""
+    names = set()
+    reading = False
+    for span in parsed.spans:
+        if span.start >= before:
+            break
+        if span.kind == "cmd":
+            reading = parsed.text[span.start:span.end] == "read"
+            continue
+        if span.kind != "arg" or span.quote:
+            continue
+        word = parsed.text[span.start:span.end]
+        m = re.match(r"([A-Za-z_]\w*)=", word)
+        if m:
+            names.add(m.group(1))
+        elif reading and _NAME_RE.fullmatch(word):
+            names.add(word)
+    for m in re.finditer(r"\bfor\s+([A-Za-z_]\w*)\s+in\b", parsed.text[:before]):
+        span = parsed.at(m.start(1))
+        if span is not None and span.kind == "arg":
+            names.add(m.group(1))
+    return names
+
+
+def check_pwsh_quoting(cmd):
+    """Block a $ in pwsh -Command code that bash expands unless the caller
+    marked which shell it is for (#58).
+
+    Bash expands $ in double quotes, unquoted words and unquoted heredocs
+    before pwsh runs. Only the caller knows whether $x is a bash or a pwsh
+    variable, so nothing is rewritten: \\$x (pwsh) and a variable assigned
+    earlier in the same command (bash) pass; anything else is blocked with
+    how to mark it. Single-quoted scripts and quoted heredocs are not
+    checked: bash expands nothing there.
+    """
+    if "pwsh" not in cmd.lower():
+        return
+    parsed = parse_command(cmd)
+    unmarked = []
+    for span in parsed.spans:
+        if span.kind != "code" or span.lang != "pwsh" or not span.expands:
+            continue
+        assigned = None
+        for offset, token in _bash_expansions(cmd[span.start:span.end]):
+            if token.startswith("$") and token != "$(":
+                name = _NAME_RE.match(token.lstrip("${"))
+                if name:
+                    if assigned is None:
+                        assigned = _bash_assigned_names(parsed, span.start + offset)
+                    if name.group(0) in assigned:
+                        continue
+            if token not in unmarked:
+                unmarked.append(token)
+    if not unmarked:
+        return
+
+    names = [t for t in unmarked if _NAME_RE.match(t.lstrip("${"))]
+    example = names[0] if names else "$name"
+    escaped = "\\$" + example[1:]
+    lines = [
+        "pwsh -Command code contains " + ", ".join(
+            "` (backtick)" if t == "`" else t for t in unmarked)
+        + " that bash expands before pwsh runs. Only you know which shell "
+        "each one is for, so mark each one:",
+        f"  pwsh variable      -> {escaped}  (or single-quote the whole -Command script)",
+        "  bash variable      -> assign it in this command first:  "
+        "W=...; pwsh -Command \"... $W ...\"",
+        "  environment value  -> \\$env:NAME  (pwsh reads it directly)",
+        "  bash $(...) output -> assign it to a variable first, then use that variable",
+    ]
+    if "`" in unmarked:
+        lines.append("  a backtick starts command substitution in bash; "
+                     "escape pwsh's $ as \\$ instead of `$")
+    block("\n".join(lines), "pwsh_quoting", cmd)
+
+
 # ---------------------------------------------------------------------------
 # Tier 1 -- auto-fixes (silently rewrite the command)
 # ---------------------------------------------------------------------------
@@ -1567,36 +1674,6 @@ def fix_pwsh_noprofile(cmd):
     )
 
 
-def fix_pwsh_quoting(cmd):
-    """Fix D: pwsh -Command "...$..." -> single quotes.
-
-    Returns (fixed_cmd, error_message_or_None).
-    When the content has both $ and embedded single quotes, we can't
-    auto-fix -- block with advice to use -File instead.
-    """
-    m = re.search(
-        r'(pwsh(?:\.exe)?\s+(?:-Command|-c)\s+)"([^"]*)"',
-        cmd,
-        re.IGNORECASE,
-    )
-    if not m:
-        return cmd, None
-
-    content = m.group(2)
-    if "$" not in content:
-        return cmd, None
-
-    if "'" in content:
-        return cmd, (
-            "pwsh -Command with $ and embedded single quotes: "
-            "bash will expand $ in double quotes and single quotes "
-            "prevent nesting. Use pwsh -File script.ps1 instead."
-        )
-
-    fixed = cmd[:m.start()] + m.group(1) + "'" + content + "'" + cmd[m.end():]
-    return fixed, None
-
-
 def fix_start_command(cmd):
     """Fix K: start "" "path" -> python -c "import os; os.startfile('path')".
 
@@ -1730,6 +1807,7 @@ _CHECKS = [
     ("powershell_legacy", check_powershell_legacy, None),
     ("wsl_invocation", check_wsl_invocation, None),
     ("dir_in_pwsh", check_dir_in_pwsh, None),
+    ("pwsh_quoting", check_pwsh_quoting, None),
     ("reserved_names", check_reserved_names, None),
     ("unc_paths", check_unc_paths, None),
 ]
@@ -1747,7 +1825,6 @@ _FIXES = [
     ("dir_windows_flags", fix_dir_windows_flags, "converted Windows dir /flags to ls equivalent"),
     ("bare_pwsh_cmdlet", fix_bare_pwsh_cmdlet, "wrapped bare PowerShell cmdlet with pwsh -NoProfile -Command"),
     ("pwsh_noprofile", fix_pwsh_noprofile, "inserted -NoProfile into pwsh invocation"),
-    ("pwsh_quoting", fix_pwsh_quoting, "swapped pwsh -Command quotes from double to single"),
     ("start_command", fix_start_command, "replaced start with os.startfile()"),
     ("cmd_cd", fix_cmd_cd, "injected cd into cmd /c for correct working directory"),
 ]
@@ -1766,25 +1843,19 @@ def _run_checks(command):
 def _run_fixes(command):
     """Apply the enabled fixes in order.
 
-    Returns (command, steps, error): steps is a list of
+    Returns (command, steps): steps is a list of
     (check_id, description, before, after) for each fix that changed the
-    command; error is (check_id, message) when a fix refuses to rewrite and
-    the command must be blocked (fix_pwsh_quoting), else None.
+    command.
     """
     steps = []
     for check_id, fn, description in _FIXES:
         if not _is_enabled(check_id):
             continue
         before = command
-        if fn is fix_pwsh_quoting:
-            command, err = fn(command)
-            if err:
-                return command, steps, (check_id, err)
-        else:
-            command = fn(command)
+        command = fn(command)
         if command != before:
             steps.append((check_id, description, before, command))
-    return command, steps, None
+    return command, steps
 
 
 def _excerpt(text, start, end, limit=60):
@@ -1820,23 +1891,20 @@ def _handle_verbatim(command):
               "Use > /dev/null to discard output.",
               "nul_redirect", command)
 
-    fixed, steps, error = _run_fixes(command)
+    fixed, steps = _run_fixes(command)
+    if not steps:
+        _log_entry("verbatim", "none", command, decision="noop")
+        sys.exit(0)
+
     items = []
     for _, description, before, after in steps:
         items += [f"{description}: {pair}" for pair in _rewrite_excerpts(before, after)]
     shown = items[:MAX_VERBATIM_EXCERPTS]
     if len(items) > len(shown):
         shown.append(f"and {len(items) - len(shown)} more")
-    if error:
-        shown.append(f"pwsh -Command quoting check: {error[1]}")
 
-    fix_ids = [s[0] for s in steps] + ([error[0]] if error else [])
-    if not fix_ids:
-        _log_entry("verbatim", "none", command, decision="noop")
-        sys.exit(0)
-
-    _log_entry("verbatim", ",".join(fix_ids), command,
-               proposed=fixed if steps else None, decision="ask")
+    _log_entry("verbatim", ",".join(s[0] for s in steps), command,
+               proposed=fixed, decision="ask")
     reason = ("# hook:verbatim: run this command exactly as written? Without the "
               "marker the hook would change it: " + "; ".join(shown) + ". "
               "If this is not confirmed, the command does not run; drop the "
@@ -1862,10 +1930,7 @@ def main():
     if "hook:verbatim" in command and parse_command(command).verbatim:
         _handle_verbatim(command)
 
-    fixed, steps, error = _run_fixes(command)
-    if error:
-        block(error[1], error[0], fixed)
-
+    fixed, steps = _run_fixes(command)
     if steps:
         fixes = [description for _, description, _, _ in steps]
         log_autofix(command, fixed, fixes)
