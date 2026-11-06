@@ -274,6 +274,68 @@ class TestPwshDollarChain:
 
 
 # ---------------------------------------------------------------------------
+# #55 -- the unicode check also covers files written through Bash heredocs
+# ---------------------------------------------------------------------------
+
+# built with chr() so this file stays ASCII (and passes the Write/Edit hook)
+ARROW = chr(0x2192)
+ROCKET = chr(0x1F680)
+UNICODE_ON = {"file_content_unicode": True}
+
+
+class TestHeredocFileContent:
+    @pytest.mark.parametrize("cmd", [
+        f"cat > notes.md <<'EOF'\nstep 1 {ARROW} step 2\nEOF",
+        f"cat >> RESEARCH-LOG.md << EOF\n- found it {ARROW} fixed\nEOF",
+        f"cat <<'EOF' | tee -a log.md > /dev/null\n{ARROW}\nEOF",
+        f"tee notes.md <<'EOF'\nlaunch {ROCKET}\nEOF",
+        f"cat > a.md <<'EOF' && cat > b.md <<'EOF2'\nplain\nEOF\n{ARROW}\nEOF2",
+    ])
+    def test_blocked_when_enabled(self, hooks_dir, cmd):
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd), config=UNICODE_ON)
+        assert proc.returncode == 2
+        assert b"U+" in proc.stderr
+
+    def test_message_names_the_file_and_character(self, hooks_dir):
+        cmd = f"cat > a.md <<'EOF' && cat > b.md <<'EOF2'\nplain\nEOF\n{ARROW}\nEOF2"
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd), config=UNICODE_ON)
+        err = proc.stderr.decode("utf-8")
+        assert "U+2192" in err
+        assert "b.md" in err
+        assert "a.md" not in err
+
+    def test_verbatim_does_not_override(self, hooks_dir):
+        cmd = f"cat > notes.md <<'EOF'{MARK}\n{ARROW}\nEOF"
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd), config=UNICODE_ON)
+        assert proc.returncode == 2
+
+    @pytest.mark.parametrize("cmd", [
+        f"cat <<'EOF' > /dev/null\n{ARROW}\nEOF",
+        f"git commit -F - <<'EOF'\nFix {ARROW}\nEOF",
+        f"python - <<'EOF' > out.txt\nprint('{ARROW}')\nEOF",
+        "cat > notes.md <<'EOF'\nplain ascii, caf" + chr(0xE9) + " is fine\nEOF",
+    ])
+    def test_not_file_content_or_allowed(self, hooks_dir, cmd):
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd), config=UNICODE_ON)
+        assert proc.returncode == 0, proc.stderr.decode("utf-8", "replace")
+
+    def test_off_by_default(self, hooks_dir):
+        cmd = f"cat > notes.md <<'EOF'\n{ARROW}\nEOF"
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd))
+        assert proc.returncode == 0
+
+    def test_write_hook_and_bash_hook_agree(self, hooks_dir):
+        # one config key and one character set for both routes
+        for text in (ARROW, chr(0x2500), chr(0x2705), "plain"):
+            write = run_hook(hooks_dir, "check_file_content.py",
+                             {"tool_name": "Write", "tool_input": {"file_path": "x.md", "content": text}},
+                             config=UNICODE_ON)
+            heredoc = run_hook(hooks_dir, "fix_bash_command.py",
+                               bash(f"cat > x.md <<'EOF'\n{text}\nEOF"), config=UNICODE_ON)
+            assert write.returncode == heredoc.returncode, text
+
+
+# ---------------------------------------------------------------------------
 # #57 -- # hook:verbatim escape hatch with permission prompt
 # ---------------------------------------------------------------------------
 
