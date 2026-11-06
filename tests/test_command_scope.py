@@ -344,7 +344,7 @@ class TestCmdCdKeepsLaterLines:
 
     def test_following_commands_kept(self):
         cmd = "cd C:/Work/x && cmd /c build.bat > log.txt 2>&1\necho done\ngit status"
-        assert fbc.fix_cmd_cd(cmd) == ('cmd /c "cd /d C:/Work/x && build.bat" > log.txt 2>&1'
+        assert fbc.fix_cmd_cd(cmd) == ('cmd /c "cd /d C:/Work/x && .\\build.bat" > log.txt 2>&1'
                                        "\necho done\ngit status")
 
 
