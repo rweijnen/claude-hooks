@@ -1049,21 +1049,31 @@ def fix_wsl_paths(cmd):
     """Fix P: /mnt/c/... -> C:/... in commands run by Git Bash.
 
     Git Bash has no /mnt, so a WSL mount path used locally always fails.
-    Paths inside the arguments of ssh/adb shell (which run on Linux) and
-    heredoc bodies (file content) are left alone. If the command invokes
-    wsl anywhere, nothing is rewritten: /mnt paths there are typically set
-    in local variables (S='/mnt/c/...'; wsl -e bash -c "... $S") that
-    are expanded into the WSL command.
+    Rewritten in command words, arguments and code (python needs C:/ too);
+    left alone in text (grep/sed patterns, echo, commit messages: #66),
+    comments, ssh/adb shell arguments (which run on Linux) and heredoc
+    bodies (file content). If the command invokes wsl anywhere, nothing is
+    rewritten: /mnt paths there are typically set in local variables
+    (S='/mnt/c/...'; wsl -e bash -c "... $S") that are expanded into the
+    WSL command.
     """
-    if _in_wsl or _WSL_ANYWHERE_RE.search(cmd):
+    if _in_wsl or "/mnt/" not in cmd or _WSL_ANYWHERE_RE.search(cmd):
         return cmd
-    heredocs, foreign = _shell_spans(cmd)
-    return _sub_outside(
+    return _sub_where(
         _WORD_BEFORE + r"/mnt/([a-zA-Z])/",
         lambda m: m.group(1).upper() + ":/",
         cmd,
-        heredocs + foreign,
+        _is_path_position,
     )
+
+
+def _is_path_position(parsed, pos):
+    """True where a path is used rather than mentioned: a command word, an
+    argument or code, outside heredoc bodies. Not data (patterns, echo,
+    messages), comments, foreign text or operators."""
+    span = parsed.at(pos)
+    return (span is not None and span.kind in ("cmd", "arg", "code")
+            and not span.heredoc)
 
 
 _RESERVED_WORD_RE = re.compile(
@@ -1619,7 +1629,16 @@ def fix_cmd_cd(cmd):
     The suffix (2>&1, |, etc.) is preserved outside the quoted block.
     Outer quotes on args are unwrapped BEFORE suffix splitting to prevent
     the suffix regex from matching && inside quoted cmd.exe commands.
+
+    Only the first line is rewritten; everything after it is kept as is
+    (#67: the rewrite used to drop it, including a commit message body).
     """
+    first, newline, rest = cmd.partition("\n")
+    return _fix_cmd_cd_line(first) + newline + rest
+
+
+def _fix_cmd_cd_line(cmd):
+    """fix_cmd_cd for a single line."""
     # Match optional `cd DIR &&` prefix, then `cmd /c`, then args
     # The /c flag may have been doubled (//c) and already fixed by fix_doubled_flags
     m = re.match(
