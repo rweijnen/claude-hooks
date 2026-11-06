@@ -292,8 +292,9 @@ class TestVerbatim:
         assert entry["proposed"] == "ls C:/x" + MARK
 
     @pytest.mark.parametrize("cmd", [
-        'echo "# hook:verbatim" /c/x',
-        "echo '# hook:verbatim' /c/x",
+        # ls, not echo: since #69 echo text is not rewritten at all
+        'ls "# hook:verbatim" /c/x',
+        "ls '# hook:verbatim' /c/x",
         "cat > notes.md <<'EOF'\n# hook:verbatim\nEOF\nls /c/x",
     ])
     def test_marker_in_text_does_not_count(self, hooks_dir, cmd):

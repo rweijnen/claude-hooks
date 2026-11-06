@@ -1321,17 +1321,28 @@ def fix_msys2_drive_paths(cmd):
     them. C:/ style works for MSYS2 tools and Windows executables under
     either setting, so the rewrite is always safe.
 
-    Paths in the arguments of wsl/ssh/adb shell belong to the other system
-    and are left alone. Heredoc bodies are still rewritten: a Python
-    heredoc needs C:/ paths just like the command line does.
+    Rewritten in command words, arguments and code, including code
+    heredocs (bash <<'EOF', python - <<'PY'), which need C:/ paths just
+    like the command line does. Left alone (#69): text (commit messages,
+    gh bodies, echo, grep/sed patterns, heredocs written to a file or
+    passed as a message), comments, and the arguments of wsl/ssh/adb shell,
+    which belong to the other system.
     """
-    _, foreign = _shell_spans(cmd)
-    return _sub_outside(
+    if "/" not in cmd:
+        return cmd
+    return _sub_where(
         r"(?:^|(?<=\s))/([a-zA-Z])/",
         lambda m: m.group(1).upper() + ":/",
         cmd,
-        foreign,
+        _drive_path_position,
     )
+
+
+def _drive_path_position(parsed, pos):
+    """True where an MSYS2 drive path is used: a command word, an argument,
+    or code (code heredocs included). Not data, comments or foreign text."""
+    span = parsed.at(pos)
+    return span is not None and span.kind in ("cmd", "arg", "code")
 
 
 def _python3_is_genuine():
