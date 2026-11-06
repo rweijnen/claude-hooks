@@ -71,8 +71,9 @@ class TestPwshDollarBlocked:
     def test_mixed_lists_only_the_unmarked_names(self, check):
         msg = check('W=1; pwsh -NoProfile -Command "Write-Host $W; ls | % { $_.Name }"')
         assert msg is not None
-        assert "$_" in msg
-        assert "$W" not in msg
+        found = msg.splitlines()[0]     # the rest is guidance with examples
+        assert "$_" in found
+        assert "$W" not in found
 
     def test_message_explains_how_to_mark(self, check):
         msg = check('pwsh -NoProfile -Command "Write-Host $x"')
