@@ -392,13 +392,41 @@ class TestCmdCdKeepsLaterLines:
         cmd = ('cd C:/Work/project && cmd /c "native\\\\build.bat" > build/log.txt 2>&1; '
                'git commit -q -m "Subject line\n\nBody line 1\nBody line 2"')
         out = fbc.fix_cmd_cd(cmd)
-        assert out.startswith('cmd /c "cd /d C:/Work/project && native\\\\build.bat"')
+        assert out.startswith('cd C:/Work/project && cmd /c "cd /d C:/Work/project && native\\\\build.bat"')
         assert out.endswith('-m "Subject line\n\nBody line 1\nBody line 2"')
 
     def test_following_commands_kept(self):
         cmd = "cd C:/Work/x && cmd /c build.bat > log.txt 2>&1\necho done\ngit status"
-        assert fbc.fix_cmd_cd(cmd) == ('cmd /c "cd /d C:/Work/x && .\\build.bat" > log.txt 2>&1'
+        assert fbc.fix_cmd_cd(cmd) == ('cd C:/Work/x && cmd /c "cd /d C:/Work/x && .\\build.bat" > log.txt 2>&1'
                                        "\necho done\ngit status")
+
+
+class TestCmdCdKeepsBashCd:
+    """#79: the bash cd before cmd /c stays, so the commands after the cmd /c
+    segment, its redirects and the Bash tool's next calls run where the
+    command said. cd /d inside the cmd string is still added."""
+
+    def test_command_after_segment_keeps_directory(self):
+        # seen live: the cat read build/gen/version.h from another repo
+        cmd = ('cd C:/Work/app && cmd.exe /c "native\\\\build.bat" 2>&1 | head -3; '
+               'cat build/gen/version.h')
+        assert fbc.fix_cmd_cd(cmd) == (
+            'cd C:/Work/app && cmd /c "cd /d C:/Work/app && native\\\\build.bat" 2>&1 | head -3; '
+            'cat build/gen/version.h')
+
+    def test_redirect_keeps_directory(self):
+        cmd = "cd C:/Work/app && cmd /c build.bat > build/log.txt 2>&1"
+        assert fbc.fix_cmd_cd(cmd) == (
+            'cd C:/Work/app && cmd /c "cd /d C:/Work/app && .\\build.bat" > build/log.txt 2>&1')
+
+    def test_relative_cd_left_alone(self):
+        # after the bash cd, cd /d sub inside cmd would look for sub/sub
+        cmd = "cd sub && cmd /c build.bat"
+        assert fbc.fix_cmd_cd(cmd) == cmd
+
+    def test_cd_inside_cmd_string_unchanged(self):
+        cmd = 'cmd /c "cd C:/Work && build.bat"'
+        assert fbc.fix_cmd_cd(cmd) == 'cmd /c "cd /d C:/Work && .\\build.bat"'
 
 
 class TestWslPathsWholeWord:
