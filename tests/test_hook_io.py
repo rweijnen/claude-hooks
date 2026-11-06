@@ -7,6 +7,7 @@ platform default encoding, exactly as when Claude Code spawns the hook.
 """
 
 import json
+import locale
 import os
 import shutil
 import subprocess
@@ -25,15 +26,18 @@ def hooks_dir(tmp_path):
     return tmp_path
 
 
-def run_hook(hooks_dir, script, payload, config=None, conv_excl="*"):
+def run_hook(hooks_dir, script, payload, config=None, conv_excl="*", python_utf8=None):
     """Run a hook as Claude Code does. conv_excl is MSYS2_ARG_CONV_EXCL in the
-    hook's environment (None = unset, Git Bash's default conversion)."""
+    hook's environment (None = unset, Git Bash's default conversion);
+    python_utf8 is PYTHONUTF8 (None = unset, as for Claude Code's own call)."""
     if config is not None:
         (hooks_dir / "config.json").write_text(json.dumps(config), encoding="utf-8")
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONUTF8", "PYTHONIOENCODING", "MSYS2_ARG_CONV_EXCL")}
     if conv_excl is not None:
         env["MSYS2_ARG_CONV_EXCL"] = conv_excl
+    if python_utf8 is not None:
+        env["PYTHONUTF8"] = python_utf8
     return subprocess.run(
         [sys.executable, str(hooks_dir / script)],
         input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -333,6 +337,47 @@ class TestHeredocFileContent:
             heredoc = run_hook(hooks_dir, "fix_bash_command.py",
                                bash(f"cat > x.md <<'EOF'\n{text}\nEOF"), config=UNICODE_ON)
             assert write.returncode == heredoc.returncode, text
+
+
+# ---------------------------------------------------------------------------
+# #56 -- python -I ignores PYTHONUTF8; the hook adds -X utf8
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(sys.version_info >= (3, 15), reason="UTF-8 mode is the default")
+class TestPythonIsolatedUtf8Chain:
+    def test_added_when_pythonutf8_is_set(self, hooks_dir):
+        out = rewritten(run_hook(hooks_dir, "fix_bash_command.py",
+                                 bash("python -I measure.py"), python_utf8="1"))
+        assert out == "python -X utf8 -I measure.py"
+
+    def test_not_added_without_pythonutf8(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash("python -I measure.py"))
+        assert proc.returncode == 0
+        assert proc.stdout == b""
+
+    def test_disabled_by_config(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash("python -I measure.py"),
+                        config={"python_isolated_utf8": False}, python_utf8="1")
+        assert proc.stdout == b""
+
+    # locale.getencoding() ignores UTF-8 mode, which pytest may run in
+    @pytest.mark.skipif(locale.getencoding().lower().replace("-", "") == "utf8",
+                        reason="the system code page is already UTF-8")
+    def test_why_python_isolated_needs_it(self, tmp_path):
+        # what the fix is for: python -I printing an arrow to a pipe crashes
+        # although PYTHONUTF8=1 is set; with -X utf8 it works
+        script = tmp_path / "arrow.py"
+        script.write_text("print(chr(0x2192))\n", encoding="ascii")
+        env = {k: v for k, v in os.environ.items()
+               if k not in ("PYTHONUTF8", "PYTHONIOENCODING")}
+        env["PYTHONUTF8"] = "1"
+        plain = subprocess.run([sys.executable, "-I", str(script)], capture_output=True, env=env)
+        fixed = subprocess.run([sys.executable, "-X", "utf8", "-I", str(script)],
+                               capture_output=True, env=env)
+        assert plain.returncode != 0
+        assert b"UnicodeEncodeError" in plain.stderr
+        assert fixed.returncode == 0
+        assert fixed.stdout.strip() == chr(0x2192).encode("utf-8")
 
 
 # ---------------------------------------------------------------------------
