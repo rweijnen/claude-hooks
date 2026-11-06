@@ -132,9 +132,38 @@ class TestMsys2Scope:
         cmd = "adb -s emulator-5580 shell ls /d/tracing"
         assert fbc.fix_msys2_drive_paths(cmd) == cmd
 
-    def test_heredoc_body_still_rewritten(self):
-        cmd = "cat > notes.txt <<'EOF'\nsee /c/Work\nEOF"
-        assert fbc.fix_msys2_drive_paths(cmd) == "cat > notes.txt <<'EOF'\nsee C:/Work\nEOF"
+    def test_code_heredoc_body_still_rewritten(self):
+        cmd = "bash <<'EOF'\ncd /c/Work && make\nEOF"
+        assert fbc.fix_msys2_drive_paths(cmd) == "bash <<'EOF'\ncd C:/Work && make\nEOF"
+
+
+class TestMsys2SkipText:
+    """#69: /c/ inside text is left alone. This reverses an earlier test that
+    expected 'see /c/Work' in a notes.txt heredoc to be rewritten: that body
+    is text written to a file, like the commit message the fix changed."""
+
+    @pytest.mark.parametrize("cmd", [
+        "cat > notes.txt <<'EOF'\nsee /c/Work\nEOF",
+        "git commit -F - <<'EOF'\ninstead of a $HOME-based /c/Users/... path\nEOF",   # seen today
+        'git commit -m "paths like /c/Users fail in native programs"',
+        'gh pr create --title "x" --body "see /c/Work for details"',
+        'echo "drive c is mounted at /c/ in Git Bash"',
+        'grep -n " /c/Work" notes.txt',
+        "ls  # was in /c/Work",
+    ])
+    def test_text_untouched(self, cmd):
+        assert fbc.fix_msys2_drive_paths(cmd) == cmd
+
+    @pytest.mark.parametrize("cmd, expected", [
+        ("cd /c/Work && ls", "cd C:/Work && ls"),
+        ("ls /c/x /d/y", "ls C:/x D:/y"),
+        ("/c/Tools/app.exe --help", "C:/Tools/app.exe --help"),
+        ("bash -c 'cd /c/Work && make'", "bash -c 'cd C:/Work && make'"),
+        ("python - <<'PY'\nimport os; os.chdir(r'C:/x')\nPY\ncd /c/y", "python - <<'PY'\nimport os; os.chdir(r'C:/x')\nPY\ncd C:/y"),
+        ("grep -n Work /c/notes.txt", "grep -n Work C:/notes.txt"),
+    ])
+    def test_paths_rewritten(self, cmd, expected):
+        assert fbc.fix_msys2_drive_paths(cmd) == expected
 
 
 class TestNulScope:
