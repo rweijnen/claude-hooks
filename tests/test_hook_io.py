@@ -244,6 +244,36 @@ class TestCommitAttribution:
 
 
 # ---------------------------------------------------------------------------
+# #58 -- pwsh -Command $ check in the full chain
+# ---------------------------------------------------------------------------
+
+class TestPwshDollarChain:
+    def test_blocked_although_noprofile_is_inserted(self, hooks_dir):
+        # v1: pwsh_noprofile ran first and hid the command from the quoting fix
+        proc = run_hook(hooks_dir, "fix_bash_command.py",
+                        bash('pwsh -Command "ls | % { $_.Name }"'))
+        assert proc.returncode == 2
+        assert b"$_" in proc.stderr
+
+    def test_blocked_when_noprofile_already_present(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py",
+                        bash('pwsh -NoProfile -Command "Write-Host $env:TEMP"'))
+        assert proc.returncode == 2
+
+    def test_marked_command_runs_with_quotes_unchanged(self, hooks_dir):
+        cmd = 'W=hi; pwsh -NoProfile -Command "Write-Host $W \\$PID"'
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd))
+        assert proc.returncode == 0
+        assert proc.stdout == b""
+
+    def test_disabled_by_config(self, hooks_dir):
+        proc = run_hook(hooks_dir, "fix_bash_command.py",
+                        bash('pwsh -NoProfile -Command "Write-Host $x"'),
+                        config={"pwsh_quoting": False})
+        assert proc.returncode == 0
+
+
+# ---------------------------------------------------------------------------
 # #57 -- # hook:verbatim escape hatch with permission prompt
 # ---------------------------------------------------------------------------
 
@@ -330,14 +360,13 @@ class TestVerbatim:
         proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd))
         assert proc.returncode == 2
 
-    def test_pwsh_quoting_block_becomes_a_question(self, hooks_dir):
-        # pwsh_noprofile is off so the quoting check sees pwsh -Command directly;
-        # in the default chain it never fires (#58).
+    def test_pwsh_dollar_check_not_overridden(self, hooks_dir):
+        # #58: an unmarked $ in pwsh -Command "..." always has a plain way
+        # through (\$name or an assignment), so verbatim does not ask
         cmd = """pwsh -Command "Write-Host $x 'y'\"""" + MARK
-        out = hook_output(run_hook(hooks_dir, "fix_bash_command.py", bash(cmd),
-                                   config={"pwsh_noprofile": False}))
-        assert out["permissionDecision"] == "ask"
-        assert "pwsh" in out["permissionDecisionReason"]
+        proc = run_hook(hooks_dir, "fix_bash_command.py", bash(cmd))
+        assert proc.returncode == 2
+        assert b"$x" in proc.stderr
 
     def test_rewrite_hint_mentions_the_marker(self, hooks_dir):
         out = hook_output(run_hook(hooks_dir, "fix_bash_command.py", bash("ls /c/x")))
