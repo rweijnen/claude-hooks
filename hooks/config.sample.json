@@ -20,6 +20,9 @@
   "_comment_python3": "Auto-fix: python3 -> python when python3 is missing or only the Microsoft Store stub",
   "python3": true,
 
+  "_comment_python_isolated_utf8": "Auto-fix: python -I x.py -> python -X utf8 -I x.py when PYTHONUTF8=1 is set (-I ignores PYTHONUTF8; Python before 3.15)",
+  "python_isolated_utf8": true,
+
   "_comment_dir_windows_flags": "Auto-fix: dir /b -> ls -1, dir /s -> ls -R (dir in Git Bash is GNU coreutils)",
   "dir_windows_flags": true,
 
