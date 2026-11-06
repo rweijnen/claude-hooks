@@ -2,28 +2,30 @@
 
 PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands and file writes before execution, automatically fixing common Git Bash/MSYS2 mistakes and enforcing code style preferences. No more `> nul` creating undeletable files, no more `python3` hitting the Windows Store alias, no more `dir /b` silently treating a flag as a path, no more emoji in code.
 
+The hard part is telling a command apart from text about a command: `python3` in `python3 x.py` should be fixed, but not in a file name, a grep pattern or a commit message. Since v2 the hooks parse each command first and fix only real commands, arguments and code (see [How it works](#how-it-works)). Where only Claude knows what a command means, the hook does not guess: it blocks with the reason and tells Claude how to say what it meant. For the rare wrong rewrite there is one escape hatch, [`# hook:verbatim`](#escape-hatch-hookverbatim), which always asks you first.
+
 ## Fixes
 
 | Fix | Trigger | Tier | Action |
 |-----|---------|------|--------|
-| Null redirect | `> nul`, `2> nul` | Auto-fix | Rewrite to `> /dev/null` (not inside heredoc bodies, e.g. a `.bat` file being written) |
-| Python3 alias | `python3 ...` | Auto-fix | Rewrite to `python` only when `python3` is not a real interpreter on this machine (missing, or the Microsoft Store stub); not inside wsl/ssh/adb shell arguments or heredoc bodies |
+| Null redirect | `> nul`, `2> nul` | Auto-fix | Rewrite real redirects to `> /dev/null`, also inside `bash -c`, wsl and ssh scripts; left alone where `nul` is right or only text: `cmd /c`, python and PowerShell code, echo, commit messages, a `.bat` heredoc being written |
+| Python3 alias | `python3 ...` | Auto-fix | Rewrite to `python` only when `python3` is not a real interpreter on this machine (missing, or the Microsoft Store stub), and only where it runs as a command; not in lookups (`which python3`), file names, text, heredoc bodies or wsl/ssh/adb shell arguments |
 | Isolated Python | `python -I x.py` with `PYTHONUTF8=1` | Auto-fix | Add `-X utf8`, because `-I` ignores `PYTHONUTF8` (see [below](#recommended-setting-pythonutf8)); only a bare `python` command, before Python 3.15 |
 | PowerShell `$` | `pwsh -Command "... $x ..."` | Block | Bash expands `$` before pwsh runs, and only the caller knows which shell each `$` is for. Passes when each one is marked: `\$x` for a pwsh variable (or single-quote the whole script), a variable assigned earlier in the same command for bash, `\$env:NAME` for an environment value. Never rewritten |
-| MSYS2 drive paths | `/c/Work/...` | Auto-fix | Rewrite to `C:/Work/...`; not inside wsl/ssh/adb shell arguments |
+| MSYS2 drive paths | `/c/Work/...` | Auto-fix | Rewrite to `C:/Work/...` in commands, arguments and code (also `bash -c` and code heredocs such as `python - <<'EOF'`); not in text (commit messages, echo, grep patterns, heredocs written to a file) or wsl/ssh/adb shell arguments |
 | Reserved names | `> con`, `> prn`, `touch aux.txt` | Block | Reject -- undeletable files |
 | Commit messages | AI Co-Authored-By trailers, "Generated with" AI footers, emoji | Block (opt-in) | Reject with a message naming the check |
 | Doubled flags | `tasklist //fi` | Auto-fix | Rewrite to single `/`, only with `MSYS2_ARG_CONV_EXCL=*` (see [below](#recommended-setting-msys2_arg_conv_excl)) |
-| Backslash paths | `C:\Users\...` | Auto-fix | Rewrite to `C:/Users/...` |
+| Backslash paths | `C:\Users\...` | Auto-fix | Rewrite to `C:/Users/...` in commands and arguments (single-quoted too), and in code where bash processes the backslashes (double quotes, unquoted heredocs); not in code bash passes on unchanged (single-quoted scripts, quoted heredocs), text, heredocs written to a file (a `.bat` keeps its backslashes) or wsl/ssh/adb arguments |
 | UNC paths | `\\server\share\...` | Block | Suggest `//server/share/...` |
 | WSL invocation | `wsl ls`, `wsl.exe cat` | Block | Only when WSL is not installed; allowed when it is |
-| WSL mount paths | `/mnt/c/Users/...` | Auto-fix | Rewrite to `C:/Users/...` in Git Bash; left alone when the command invokes wsl, inside ssh/adb shell arguments and heredoc bodies |
+| WSL mount paths | `/mnt/c/Users/...` | Auto-fix | Rewrite to `C:/Users/...` in Git Bash; left alone when the command invokes wsl, in text, ssh/adb shell arguments and heredoc bodies |
 | Legacy PowerShell | `powershell.exe ...` | Block | Suggest `pwsh`; use full path to opt in to PS 5.1 |
 | `dir /b` in bash | `dir /b path` | Auto-fix | Rewrite to `ls -1 path` |
 | Bare PS cmdlet | `Get-ChildItem C:/Users` | Auto-fix | Wrap with `pwsh -NoProfile -Command '...'` |
 | pwsh -NoProfile | `pwsh -Command '...'` | Auto-fix | Insert `-NoProfile` flag |
 | Windows env vars | `$USERPROFILE`, `$APPDATA`, `$LOCALAPPDATA` | Auto-fix | Rewrite to the forward-slash Windows path (`C:/Users/me/AppData/Roaming`) where bash expands them; not in single quotes, escaped, or in `cmd /c` / pwsh code |
-| cmd /c CWD | `cmd /c build.bat` | Auto-fix | Inject `cd /d <cwd>` so cmd.exe finds the script |
+| cmd /c CWD | `cmd /c build.bat` | Auto-fix | Inject `cd /d <cwd>` so cmd.exe finds the script; only the first line is changed |
 | start command | `start "" "file.png"` | Auto-fix | Rewrite to `python os.startfile()` |
 | `dir /flag` in pwsh | `pwsh -Command "dir /b ..."` | Block | Suggest `Get-ChildItem` equivalent |
 | Emoji in files | Write/Edit with emoji, arrows, box drawing; also a Bash heredoc written to a file (`cat > notes.md <<'EOF'`, `tee`) | Block (opt-in) | Reject with message; both routes use the same character set and config key |
@@ -87,7 +89,7 @@ Each line is a JSON object with:
 | Field | Description |
 |-------|-------------|
 | `time` | Human-readable timestamp (`2026-02-18 13:15:51`) |
-| `type` | `autofix` (tier 1, silently applied), `suggest` (tier 2, blocked) or `verbatim` (see [Escape hatch](#escape-hatch-hookverbatim)) |
+| `type` | `autofix` (rewritten; Claude is told what changed), `suggest` (blocked, with the reason) or `verbatim` (see [Escape hatch](#escape-hatch-hookverbatim)) |
 | `fix` | What was fixed, or the check ID that blocked |
 | `cwd` | Working directory (identifies the project) |
 | `original` | The original command |
@@ -145,13 +147,13 @@ Claude Code does not set this itself. Only `*` switches conversion off completel
 
 ## Escape hatch: `# hook:verbatim`
 
-When a rewrite is wrong, for example because the command asks about `python3` rather than running it, Claude can run the command again with a trailing comment:
+When a rewrite is wrong, for example because an old tool really needs backslashes in a path, Claude can run the command again with a trailing comment:
 
 ```
-which -a python3  # hook:verbatim
+legacy.exe /in 'C:\data\in.txt'  # hook:verbatim
 ```
 
-The hook then makes no change itself. If it would have changed something, it asks you first: the permission prompt lists each skipped rewrite (`python3 -> python`), and the command runs unmodified only if you approve. If nothing would have changed, the marker does nothing. Blocking checks still apply, and so does the block on a real `> nul` redirect, because that creates a file Windows cannot delete.
+The hook then makes no change itself. If it would have changed something, it asks you first: the permission prompt lists each skipped rewrite (`'C:\data\in.txt' -> 'C:/data/in.txt'`), and the command runs unmodified only if you approve. If nothing would have changed, the marker does nothing. Blocking checks still apply, and so does the block on a real `> nul` redirect, because that creates a file Windows cannot delete.
 
 Only a real top-level comment counts; the marker inside quotes, a heredoc or a code string is ignored, so documentation that mentions it does not trigger it. Claude learns about the marker from the hook's own message after a rewrite. Every use is logged with `"type": "verbatim"` and `"decision": "noop"` or `"ask"`.
 
@@ -213,8 +215,8 @@ See `config.sample.json` for descriptions of each check.
 
 The hooks are plain Python scripts in `~/.claude/hooks/`. Edit them to:
 
-- Add new auto-fix patterns (add a function, call it in `main()`)
-- Promote a tier-2 suggestion to auto-fix (move the check from blocking to rewriting)
+- Add new auto-fix patterns (add a function and a row in the `_FIXES` table; checks go in `_CHECKS`)
+- Change where a fix applies (each fix passes a predicate over the parsed command to `_sub_where`)
 - Extend `_DIR_FLAG_MAP` in `fix_bash_command.py` to recognise additional `dir` flags
 - Adjust unicode blocking ranges in `check_file_content.py`
 - Add exceptions for specific commands or patterns
@@ -224,8 +226,26 @@ The hooks are plain Python scripts in `~/.claude/hooks/`. Edit them to:
 Claude Code hooks receive a JSON object on stdin with `tool_name` and `tool_input`. The hook can:
 
 - **Exit 0** with no output: allow the command unchanged
-- **Exit 0** with JSON on stdout: rewrite the command via `updatedInput`
+- **Exit 0** with JSON on stdout: rewrite the command via `updatedInput` (every other input field is passed through), with a note to Claude saying what changed
+- **Exit 0** with `permissionDecision: "ask"`: ask you before running the command (used by `# hook:verbatim`)
 - **Exit 2** with a message on stderr: block the command and show the message to Claude
+
+Before any fix runs, the Bash hook parses the command and labels every part of it:
+
+| Kind | Examples |
+|---|---|
+| command word | `python3`, `ls`, also inside `$(...)` and `bash -c '...'` |
+| argument | file names, paths, options |
+| code | `python -c "..."`, `pwsh -Command '...'`, `cmd /c ...`, a heredoc fed to `python -` or `bash` |
+| foreign | what runs on another system: the arguments of wsl, ssh, plink, `adb shell` |
+| data | text no program runs: echo/printf arguments, `git commit -m`, `gh --body`, grep/sed/awk patterns, heredocs written to a file |
+| comment | `# ...` |
+
+Each fix decides where it applies. `python3` is fixed only as a command word, `/c/` paths in commands, arguments and code, `> nul` only as a real redirect. Literal text is not rewritten, so a commit message, a grep pattern or a file being written stays exactly as Claude wrote it. (The Windows env var fix is the one exception by design: it applies wherever bash would expand `$APPDATA` anyway, and only changes which path it expands to.)
+
+Some cases have no right rewrite, because only Claude knows what it meant. An example is a `$` in `pwsh -Command "..."`: it can be a bash or a PowerShell variable. There the hook blocks and says how to mark each case (`\$x` for PowerShell, an assignment in the same command for bash), and Claude reruns the command marked.
+
+The parser is a scanner for the bash Claude writes, not a full bash grammar. Each change was checked against a replay of every Bash command from local Claude Code transcripts (about 16,700), comparing the old and the new hook outcome by outcome.
 
 ## How this project is built
 
