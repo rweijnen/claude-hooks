@@ -305,6 +305,45 @@ class TestRedirects:
 
 
 # ---------------------------------------------------------------------------
+# #55 -- which files a data heredoc body is written to
+# ---------------------------------------------------------------------------
+
+def heredoc_files(cmd):
+    """[(body, files)] for each data heredoc body written to a file."""
+    return [(cmd[a:b], list(files)) for a, b, files in fbc.parse_command(cmd).heredoc_files]
+
+
+class TestHeredocFiles:
+    @pytest.mark.parametrize("cmd, expected", [
+        ("cat > notes.md <<'EOF'\nhi\nEOF", [("hi\n", ["notes.md"])]),
+        ("cat >> log.md << EOF\nhi\nEOF\necho done", [("hi\n", ["log.md"])]),
+        ("cat <<'EOF' > out.txt\nhi\nEOF", [("hi\n", ["out.txt"])]),
+        ("tee a.md b.md <<'EOF'\nhi\nEOF", [("hi\n", ["a.md", "b.md"])]),
+        ("tee -a log.md <<'EOF' > /dev/null\nhi\nEOF", [("hi\n", ["log.md"])]),
+        ("cat <<'EOF' | tee -a log.md > /dev/null\nhi\nEOF", [("hi\n", ["log.md"])]),
+        ("cd x && cat > a.md <<'EOF' && cat > b.md <<'EOF2'\none\nEOF\ntwo\nEOF2",
+         [("one\n", ["a.md"]), ("two\n", ["b.md"])]),
+        ("cat 2>&1 > c.md <<'EOF'\nhi\nEOF", [("hi\n", ["c.md"])]),
+    ])
+    def test_written_to_file(self, cmd, expected):
+        assert heredoc_files(cmd) == expected
+
+    @pytest.mark.parametrize("cmd", [
+        "cat <<'EOF' > /dev/null\nhi\nEOF",
+        "cat <<'EOF'\nhi\nEOF",
+        "git commit -F - <<'EOF'\nhi\nEOF",
+        "gh pr create --body-file - <<'EOF'\nhi\nEOF",
+        "python - <<'EOF' > out.txt\nprint(1)\nEOF",       # code, its output goes to the file
+        "bash <<'EOF' > log.txt\necho hi\nEOF",
+        "ssh pi 'cat > x.md' <<'EOF'\nhi\nEOF",             # a remote file
+        "cat <<'EOF' | grep h > out.txt\nhi\nEOF",          # grep's output, not the body
+        "cat > x.md <<< 'hi'",
+    ])
+    def test_not_written_to_file(self, cmd):
+        assert heredoc_files(cmd) == []
+
+
+# ---------------------------------------------------------------------------
 # Comments and the verbatim marker
 # ---------------------------------------------------------------------------
 
