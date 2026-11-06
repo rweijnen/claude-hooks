@@ -104,7 +104,7 @@ class TestDoubledFlagsDefaultConversion:
 class TestFixCmdCd:
     def test_cd_and_cmd_c(self):
         result = fix_cmd_cd("cd C:/Work/project && cmd /c build.bat 2>&1")
-        assert result == r'cmd /c "cd /d C:/Work/project && .\build.bat" 2>&1'
+        assert result == r'cd C:/Work/project && cmd /c "cd /d C:/Work/project && .\build.bat" 2>&1'
 
     def test_bare_cmd_c_uses_cwd(self):
         with patch("fix_bash_command.os.getcwd", return_value=r"C:\Users\me\project"):
@@ -118,7 +118,7 @@ class TestFixCmdCd:
 
     def test_cd_with_quoted_dir(self):
         result = fix_cmd_cd('cd "C:/My Projects" && cmd /c build.bat')
-        assert result == r'cmd /c "cd /d C:/My Projects && .\build.bat"'
+        assert result == r'cd "C:/My Projects" && cmd /c "cd /d C:/My Projects && .\build.bat"'
 
     def test_preserves_2_redirect(self):
         with patch("fix_bash_command.os.getcwd", return_value=r"C:\Work"):
@@ -187,7 +187,7 @@ class TestDoubledFlagsThenCmdCd:
         cmd = fix_doubled_flags(cmd)
         assert cmd == "cd C:/Work && cmd /c build.bat 2>&1"
         cmd = fix_cmd_cd(cmd)
-        assert cmd == r'cmd /c "cd /d C:/Work && .\build.bat" 2>&1'
+        assert cmd == r'cd C:/Work && cmd /c "cd /d C:/Work && .\build.bat" 2>&1'
 
 
 # ---------------------------------------------------------------------------
