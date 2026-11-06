@@ -1782,7 +1782,11 @@ def fix_cmd_cd(cmd):
     fails when run from a cd'd directory. Uses `cd /d` so cross-drive
     switches work (plain `cd` silently fails across drives). This fix:
 
-    1. `cd DIR && cmd /c args [suffix]` -> `cmd /c "cd /d DIR && args" [suffix]`
+    1. `cd DIR && cmd /c args [suffix]` -> `cd DIR && cmd /c "cd /d DIR && args" [suffix]`
+       The bash cd stays, so the commands after the cmd /c segment, its
+       redirects and the Bash tool's next calls keep that directory (#79).
+       A relative DIR (or ~, $VAR) is left alone: cd /d would resolve it
+       again from inside DIR.
     2. `cmd /c "cd DIR && args"`        -> `cmd /c "cd /d DIR && args"`
     3. `cmd /c args` (no preceding cd)  -> `cmd /c "cd /d <cwd> && args"`
 
@@ -1802,17 +1806,22 @@ def _fix_cmd_cd_line(cmd):
     # Match optional `cd DIR &&` prefix, then `cmd /c`, then args
     # The /c flag may have been doubled (//c) and already fixed by fix_doubled_flags
     m = re.match(
-        r'^(?:cd\s+("(?:[^"]+)"|[^\s&]+)\s*&&\s*)?'  # optional: cd DIR &&
-        r'cmd(?:\.exe)?\s+/c\s+'                       # cmd /c
-        r'(.*)',                                         # args (greedy)
+        r'^((?:cd\s+("(?:[^"]+)"|[^\s&]+)\s*&&\s*)?)'  # optional: cd DIR &&
+        r'cmd(?:\.exe)?\s+/c\s+'                         # cmd /c
+        r'(.*)',                                           # args (greedy)
         cmd,
         re.IGNORECASE,
     )
     if not m:
         return cmd
 
-    cd_dir = m.group(1)  # None if no preceding cd
-    args_and_suffix = m.group(2).strip()
+    cd_prefix = m.group(1)  # the bash `cd DIR && `, kept as written (#79)
+    cd_dir = m.group(2)  # None if no preceding cd
+    args_and_suffix = m.group(3).strip()
+    if cd_dir and not re.match(r'^"?(?:[A-Za-z]:|/)', cd_dir):
+        # Relative (or ~, $VAR): after the bash cd, a cd /d DIR inside cmd
+        # would resolve DIR a second time.
+        return cmd
 
     if not args_and_suffix:
         return cmd
@@ -1864,7 +1873,7 @@ def _fix_cmd_cd_line(cmd):
     if re.match(r'^[^/\\]+\.(bat|cmd)$', first_token, re.IGNORECASE):
         args = r'.\{}'.format(args)
 
-    return f'cmd /c "cd /d {directory} && {args}"{suffix}'
+    return f'{cd_prefix}cmd /c "cd /d {directory} && {args}"{suffix}'
 
 
 # ---------------------------------------------------------------------------
