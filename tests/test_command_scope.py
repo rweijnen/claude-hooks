@@ -166,6 +166,30 @@ class TestMsys2SkipText:
         assert fbc.fix_msys2_drive_paths(cmd) == expected
 
 
+class TestMsys2DriveRootInCode:
+    """#77: in code, a bare drive root with nothing after it is prose, not a
+    path. Arguments still get it rewritten: `ls /c/` is a real path."""
+
+    @pytest.mark.parametrize("cmd", [
+        # seen live: an SVG chart title in a python heredoc
+        "python - <<'EOF'\nparts = ['<title id=\"t\">The /c/ path fix does almost all the rewriting</title>']\nEOF",
+        "python -c \"print('the /c/ prefix is Git Bash only')\"",
+        "bash -c 'echo x; ls /c/'",
+        "python - <<'EOF'\nprint('drive /c/\\nnext')\nEOF",
+    ])
+    def test_bare_root_in_code_untouched(self, cmd):
+        assert fbc.fix_msys2_drive_paths(cmd) == cmd
+
+    @pytest.mark.parametrize("cmd, expected", [
+        ("ls /c/", "ls C:/"),
+        ("ls /c/ /d/", "ls C:/ D:/"),
+        ("bash -c 'ls /c/Work'", "bash -c 'ls C:/Work'"),
+        ("bash <<'EOF'\nls /c/x.txt\nEOF", "bash <<'EOF'\nls C:/x.txt\nEOF"),
+    ])
+    def test_paths_still_rewritten(self, cmd, expected):
+        assert fbc.fix_msys2_drive_paths(cmd) == expected
+
+
 class TestNulScope:
     def test_local_rewritten(self):
         assert fbc.fix_nul_redirect("ping x > nul 2>&1") == "ping x > /dev/null 2>&1"
