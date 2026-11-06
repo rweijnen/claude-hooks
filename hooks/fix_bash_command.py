@@ -12,6 +12,7 @@ Both tiers log to fixups.log next to this script for review.
 import bisect
 import difflib
 import functools
+import importlib.util
 import json
 import os
 import re
@@ -53,6 +54,7 @@ _DEFAULTS = {
     "git_commit_attribution": False,
     "git_commit_generated": False,
     "git_commit_emoji": False,
+    "file_content_unicode": False,
 }
 
 _config_cache = None
@@ -468,6 +470,8 @@ class Parsed:
     starts: tuple
     redirects: tuple     # (op_start, op_end, target_start, target_end)
     verbatim: bool       # a top-level "# hook:verbatim" comment is present
+    heredoc_files: tuple = ()   # (body_start, body_end, files) per data heredoc
+                                # body written to a file (see _written_files)
 
     def at(self, pos):
         """The span containing position pos, or None outside the text."""
@@ -494,12 +498,35 @@ class _Word:
 
 
 class _SimpleCommand:
-    __slots__ = ("words", "targets", "heredoc")
+    __slots__ = ("words", "targets", "heredoc", "writes", "pipe_next")
 
     def __init__(self):
         self.words = []
         self.targets = []
         self.heredoc = ("data", None)
+        self.writes = []        # files its stdout is redirected to
+        self.pipe_next = None   # the command its stdout is piped into
+
+
+_DISCARD_TARGETS = frozenset({"/dev/null", "nul"})
+
+
+def _tee_files(sc):
+    """File arguments of a tee command, else []."""
+    if not sc.words or _cmd_name(sc.words[0].value) != "tee":
+        return []
+    return [w.value for w in sc.words[1:]
+            if not w.value.startswith("-") and w.value.lower() not in _DISCARD_TARGETS]
+
+
+def _written_files(sc):
+    """Files a heredoc fed to sc ends up in: sc's stdout redirects, tee's
+    file arguments, and for cat <<EOF | tee FILE the files of that tee.
+    Other commands write their own output, not the heredoc."""
+    files = list(sc.writes) + _tee_files(sc)
+    if sc.words and _cmd_name(sc.words[0].value) == "cat" and sc.pipe_next is not None:
+        files += _tee_files(sc.pipe_next)
+    return files
 
 
 def _cmd_name(value):
@@ -714,6 +741,7 @@ class _Parser:
         self.n = len(text)
         self.labels = [None] * self.n
         self.redirects = []
+        self.heredoc_files = []
         self.pending = []     # heredocs waiting for the end of their line
         self.verbatim = False
 
@@ -767,7 +795,10 @@ class _Parser:
             if c in ";|" or (c == "&" and not s.startswith(">", i + 1)):
                 j = i + 2 if s[i:i + 2] in ("&&", "||", ";;", "|&", ";&") else i + 1
                 self.finish(sc)
-                sc = _SimpleCommand()
+                nxt = _SimpleCommand()
+                if s[i:j] in ("|", "|&"):
+                    sc.pipe_next = nxt
+                sc = nxt
                 self.label(i, j, _OP)
                 i = j
                 continue
@@ -817,6 +848,10 @@ class _Parser:
         else:
             sc.targets.append(word)
             self.redirects.append((m.start(), m.end(), word.start, word.end))
+            fd = m.group()[:len(m.group()) - len(op)]
+            if (op in (">", ">>", ">|", "&>", "&>>") and fd in ("", "1")
+                    and word.value.lower() not in _DISCARD_TARGETS):
+                sc.writes.append(word.value)
         return j
 
     def read_heredoc_bodies(self, i):
@@ -828,8 +863,8 @@ class _Parser:
             body_start = j = i
             while True:
                 if j >= n:
+                    body_end = i = n
                     self.label(body_start, n, lab)
-                    i = n
                     break
                 e = s.find("\n", j)
                 e = n if e < 0 else e
@@ -837,11 +872,16 @@ class _Parser:
                 if strip_tabs:
                     line = line.lstrip("\t")
                 if line.rstrip("\r") == delim:
+                    body_end = j
                     self.label(body_start, j, lab)
                     self.label(j, min(e + 1, n), _OP)
                     i = min(e + 1, n)
                     break
                 j = e + 1
+            if kind == "data":
+                files = _written_files(sc)
+                if files:
+                    self.heredoc_files.append((body_start, body_end, tuple(files)))
         return i
 
     def read_word(self, i, term, depth):
@@ -959,7 +999,8 @@ def parse_command(cmd):
         spans.append(Span(k, e, *lab))
         starts.append(k)
         k = e
-    return Parsed(cmd, tuple(spans), tuple(starts), tuple(p.redirects), p.verbatim)
+    return Parsed(cmd, tuple(spans), tuple(starts), tuple(p.redirects), p.verbatim,
+                  tuple(p.heredoc_files))
 
 
 def fix_backslash_paths(cmd):
@@ -1274,6 +1315,34 @@ def _bash_assigned_names(parsed, before):
         if span is not None and span.kind == "arg":
             names.add(m.group(1))
     return names
+
+
+@functools.lru_cache(maxsize=1)
+def _find_blocked_char():
+    """find_blocked_char from check_file_content.py next to this script, so
+    files written through Bash and through Write/Edit block the same
+    characters. install.py always installs both scripts."""
+    path = _HOOK_DIR / "check_file_content.py"
+    spec = importlib.util.spec_from_file_location("check_file_content", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)     # a missing file raises: no silent skip
+    return module.find_blocked_char
+
+
+def check_heredoc_file_content(cmd):
+    """Apply the Write/Edit unicode check to heredoc bodies written to a file
+    (cat > notes.md <<'EOF', tee, cat <<'EOF' | tee), #55. Same config key
+    (file_content_unicode) and message as check_file_content.py."""
+    if cmd.isascii():
+        return
+    for start, end, files in parse_command(cmd).heredoc_files:
+        found = _find_blocked_char()(cmd[start:end])
+        if found:
+            _, cp, category = found
+            block(f"Blocked: found {category} character U+{cp:04X} in the heredoc "
+                  f"written to {files[0]}. Use plain ASCII unless specifically "
+                  f"requested by the user.",
+                  "file_content_unicode", cmd)
 
 
 def check_pwsh_quoting(cmd):
@@ -1808,6 +1877,7 @@ _CHECKS = [
     ("wsl_invocation", check_wsl_invocation, None),
     ("dir_in_pwsh", check_dir_in_pwsh, None),
     ("pwsh_quoting", check_pwsh_quoting, None),
+    ("file_content_unicode", check_heredoc_file_content, None),
     ("reserved_names", check_reserved_names, None),
     ("unc_paths", check_unc_paths, None),
 ]

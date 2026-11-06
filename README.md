@@ -25,7 +25,7 @@ PreToolUse hooks for Claude Code on Windows. These hooks intercept Bash commands
 | cmd /c CWD | `cmd /c build.bat` | Auto-fix | Inject `cd /d <cwd>` so cmd.exe finds the script |
 | start command | `start "" "file.png"` | Auto-fix | Rewrite to `python os.startfile()` |
 | `dir /flag` in pwsh | `pwsh -Command "dir /b ..."` | Block | Suggest `Get-ChildItem` equivalent |
-| Emoji in files | Write/Edit with emoji | Block | Reject with message |
+| Emoji in files | Write/Edit with emoji, arrows, box drawing; also a Bash heredoc written to a file (`cat > notes.md <<'EOF'`, `tee`) | Block (opt-in) | Reject with message; both routes use the same character set and config key |
 
 ## Installation
 
@@ -199,7 +199,7 @@ Then edit `config.json` to toggle checks. Each key is a check ID mapped to `true
 | `git_commit_attribution` | Block Co-Authored-By trailers that name an AI assistant (human co-authors pass) | off | block |
 | `git_commit_generated` | Block "Generated with/by <AI tool>" footers in commits | off | block |
 | `git_commit_emoji` | Block emoji in commit messages | off | block |
-| `file_content_unicode` | Block emoji/unicode in file writes | off | block |
+| `file_content_unicode` | Block emoji/unicode in file writes: Write/Edit content and Bash heredoc bodies written to a file (not `/dev/null`, commit messages or heredocs fed to an interpreter) | off | block |
 
 Safety checks (default on) prevent real mistakes that break commands or create undeletable files. Style checks (default off) enforce preferences -- enable the ones you want. The commit attribution checks are for repos whose own policy disallows these lines; this project itself discloses AI use (see [How this project is built](#how-this-project-is-built)).
 

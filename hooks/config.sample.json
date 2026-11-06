@@ -62,6 +62,6 @@
   "_comment_git_commit_emoji": "Block: git commit messages containing emoji",
   "git_commit_emoji": false,
 
-  "_comment_file_content_unicode": "Block: Write/Edit with emoji or decorative unicode (box drawing, dingbats)",
+  "_comment_file_content_unicode": "Block: emoji or decorative unicode (arrows, box drawing, dingbats) in Write/Edit content and in Bash heredocs written to a file",
   "file_content_unicode": false
 }
