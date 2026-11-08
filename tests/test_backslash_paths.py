@@ -63,6 +63,39 @@ class TestQuotedLeftAlone:
         assert fix_backslash_paths(cmd) == cmd
 
 
+class TestQuotedButUsedByBash:
+    """#81: a quoted path is still rewritten where bash itself works with it.
+    Bash globs only with / as the separator, so a quoted backslash directory
+    next to an unquoted glob matches nothing (tested in Git Bash). And in
+    double quotes a backslash before the closing quote escapes it, so the
+    string never ends."""
+
+    @pytest.mark.parametrize("cmd, expected", [
+        (r'ls "C:\Work\data"/*.txt', 'ls "C:/Work/data"/*.txt'),
+        (r'ls "C:\Work\data"*', 'ls "C:/Work/data"*'),
+        (r"ls 'C:\Work\data'/*.txt", "ls 'C:/Work/data'/*.txt"),
+        (r'for f in "C:\Work\logs"/*.log; do echo "$f"; done',
+         'for f in "C:/Work/logs"/*.log; do echo "$f"; done'),
+        (r'ls "C:\Work\data\"*.img 2>/dev/null', 'ls "C:/Work/data/"*.img 2>/dev/null'),
+        (r'ls "C:\Work\data\"', 'ls "C:/Work/data/"'),
+    ])
+    def test_rewritten(self, cmd, expected):
+        assert fix_backslash_paths(cmd) == expected
+
+    @pytest.mark.parametrize("cmd", [
+        # escaped glob: no pathname expansion
+        r"ls 'C:\Work\data'\*.txt",
+        # glob in another word
+        r'ls "C:\Work\data" *.txt',
+        # a quoted glob is literal
+        r'ls "C:\Work\data\*.txt"',
+        # an even run of backslashes before the quote does not escape it
+        r'ls "C:\\Work\\data\\\\"',
+    ])
+    def test_unchanged(self, cmd):
+        assert fix_backslash_paths(cmd) == cmd
+
+
 class TestLeftAlone:
     @pytest.mark.parametrize("cmd", [
         # text
