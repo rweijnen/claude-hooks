@@ -938,17 +938,16 @@ def fix_backslash_paths(cmd):
     how many times Claude doubled them. The drive letter must be at a word
     boundary (not mid-word like HKCU\Software).
 
-    Rewritten in command words and arguments whatever the quoting: forward
-    slashes work for virtually all Windows executables, single quotes
-    included (the step C measurement on #48: 45 SP='C:\...' rewrites, all
-    harmless). In code (python -c, pwsh, cmd /c, heredocs fed to an
-    interpreter) only where bash processes backslashes: unquoted, double
-    quotes, unquoted heredocs. Code bash passes on byte for byte (single
-    quotes, quoted heredocs) is left alone: a backslash path is valid there
-    and may be compared or replaced as a string. Also left alone: text
-    (echo, commit messages, grep/sed patterns), heredocs written to a file
-    (a .bat needs its backslashes), comments and wsl/ssh/adb arguments. A
-    tool that truly needs backslashes is run with # hook:verbatim.
+    Rewritten only where bash damages the path: unquoted, in a command word,
+    an argument or code (`ls C:\Work\x` reaches ls as C:Workx). Inside
+    quotes the path reaches the program as Claude meant it: single quotes
+    byte for byte, double quotes and unquoted heredocs turn \\ into \ and
+    keep a single \W. Those are left alone (#81), because the hook cannot
+    know whether the receiving program needs backslashes: a VMware shared
+    folder did, and the program is often a variable ("$VMRUN") or the path
+    is used on another machine. Also left alone: text (echo, commit
+    messages, grep/sed patterns), heredocs written to a file, comments and
+    wsl/ssh/adb arguments.
     """
     if ":\\" not in cmd:
         return cmd
@@ -957,12 +956,10 @@ def fix_backslash_paths(cmd):
 
 
 def _backslash_path_position(parsed, pos):
+    """True where bash strips the backslashes of a path: an unquoted command
+    word, argument or code. Quoted text and heredocs keep them (#81)."""
     span = parsed.at(pos)
-    if span is None:
-        return False
-    if span.kind in ("cmd", "arg"):
-        return True
-    return span.kind == "code" and span.expands
+    return span is not None and span.kind in ("cmd", "arg", "code") and span.quote == ""
 
 
 def check_unc_paths(cmd):
