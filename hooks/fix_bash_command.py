@@ -1837,6 +1837,25 @@ def fix_cmd_cd(cmd):
     return _fix_cmd_cd_line(first) + newline + rest
 
 
+def _cmd_c_args_end(line, start):
+    """End of the unquoted cmd /c arguments that begin at start: the last of
+    the code spans joined only by whitespace. None if the parser does not
+    see code there."""
+    parsed = parse_command(line)
+    span = parsed.at(start)
+    if span is None or span.kind != "code" or span.start != start:
+        return None
+    i = parsed.spans.index(span)
+    end = span.end
+    while i + 2 < len(parsed.spans):
+        gap, nxt = parsed.spans[i + 1], parsed.spans[i + 2]
+        if gap.kind != "op" or not line[gap.start:gap.end].isspace() or nxt.kind != "code":
+            break
+        end = nxt.end
+        i += 2
+    return end
+
+
 def _fix_cmd_cd_line(cmd):
     """fix_cmd_cd for a single line."""
     # Match optional `cd DIR &&` prefix, then `cmd /c`, then args
@@ -1873,15 +1892,15 @@ def _fix_cmd_cd_line(cmd):
             args = args_and_suffix[1:]
             suffix = ''
     else:
-        # Split trailing redirections/pipes from the args
-        # Match: 2>&1, >&2, |, || ..., && ... at the end
-        suffix_m = re.search(r'\s+((?:[12]>&[12]|[|>]|&&\s).*)$', args_and_suffix)
-        if suffix_m:
-            args = args_and_suffix[:suffix_m.start()].strip()
-            suffix = ' ' + suffix_m.group(1)
-        else:
-            args = args_and_suffix
-            suffix = ''
+        # The arguments end where bash ends the command (#83): the parser's
+        # code spans after /c, up to the first operator that is not plain
+        # whitespace (; & && | || or a redirect). The rest stays a bash
+        # command or redirect, outside the cmd string.
+        end = _cmd_c_args_end(cmd, m.start(3))
+        if end is None:
+            return cmd
+        args = cmd[m.start(3):end]
+        suffix = cmd[end:].rstrip()
 
     # Check if args themselves start with "cd [/d] DIR &&" (cd inside cmd /c quotes)
     inner_cd = re.match(

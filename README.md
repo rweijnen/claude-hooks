@@ -25,7 +25,7 @@ The hard part is telling a command apart from text about a command: `python3` in
 | Bare PS cmdlet | `Get-ChildItem C:/Users` | Auto-fix | Wrap with `pwsh -NoProfile -Command '...'` |
 | pwsh -NoProfile | `pwsh -Command '...'` | Auto-fix | Insert `-NoProfile` flag |
 | Windows env vars | `$USERPROFILE`, `$APPDATA`, `$LOCALAPPDATA` | Auto-fix | Rewrite to the forward-slash Windows path (`C:/Users/me/AppData/Roaming`) where bash expands them; not in single quotes, escaped, or in `cmd /c` / pwsh code |
-| cmd /c CWD | `cmd /c build.bat` | Auto-fix | Inject `cd /d <cwd>` so cmd.exe finds the script; a bash `cd DIR &&` before it stays, so later commands keep that directory (a relative `DIR` is left alone); only the first line is changed |
+| cmd /c CWD | `cmd /c build.bat` | Auto-fix | Inject `cd /d <cwd>` so cmd.exe finds the script; a bash `cd DIR &&` before it stays, so later commands keep that directory (a relative `DIR` is left alone); the cmd string ends where bash ends the command, so a following `; cmd`, `& cmd`, pipe or redirect stays in bash; only the first line is changed |
 | start command | `start "" "file.png"` | Auto-fix | Rewrite to `python os.startfile()` |
 | `dir /flag` in pwsh | `pwsh -Command "dir /b ..."` | Block | Suggest `Get-ChildItem` equivalent |
 | Emoji in files | Write/Edit with emoji, arrows, box drawing; also a Bash heredoc written to a file (`cat > notes.md <<'EOF'`, `tee`) | Block (opt-in) | Reject with message; both routes use the same character set and config key |
