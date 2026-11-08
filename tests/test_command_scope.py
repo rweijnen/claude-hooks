@@ -401,6 +401,41 @@ class TestCmdCdKeepsLaterLines:
                                        "\necho done\ngit status")
 
 
+class TestCmdCdArgsEndAtBashSeparator:
+    """#83: unquoted cmd /c arguments end where bash ends the command (the
+    parser's code spans); a following ; or & command stays a bash command."""
+
+    @pytest.fixture(autouse=True)
+    def cwd(self, monkeypatch):
+        monkeypatch.setattr(fbc.os, "getcwd", lambda: "C:\\Work")
+
+    @pytest.mark.parametrize("cmd, expected", [
+        ("cmd /c build.bat; cat out.txt",
+         'cmd /c "cd /d C:/Work && .\\build.bat"; cat out.txt'),
+        ("cmd /c build.bat;cat out.txt",
+         'cmd /c "cd /d C:/Work && .\\build.bat";cat out.txt'),
+        ("cmd /c build.bat & echo bg",
+         'cmd /c "cd /d C:/Work && .\\build.bat" & echo bg'),
+        ("cd C:/App && cmd /c build.bat release; cat out.txt",
+         'cd C:/App && cmd /c "cd /d C:/App && .\\build.bat release"; cat out.txt'),
+    ])
+    def test_separator_stays_outside(self, cmd, expected):
+        assert fbc.fix_cmd_cd(cmd) == expected
+
+    @pytest.mark.parametrize("cmd, expected", [
+        ("cmd /c build.bat --x 2>&1 | grep err",
+         'cmd /c "cd /d C:/Work && .\\build.bat --x" 2>&1 | grep err'),
+        ("cmd /c build.bat > log.txt 2>&1; echo done",
+         'cmd /c "cd /d C:/Work && .\\build.bat" > log.txt 2>&1; echo done'),
+        ("cmd /c build.bat && echo ok", 'cmd /c "cd /d C:/Work && .\\build.bat" && echo ok'),
+        ("cmd /c build.bat || echo fail", 'cmd /c "cd /d C:/Work && .\\build.bat" || echo fail'),
+        ("cmd /c dir C:/Work", 'cmd /c "cd /d C:/Work && dir C:/Work"'),
+        ('cmd /c "build.bat" ; cat x', 'cmd /c "cd /d C:/Work && .\\build.bat" ; cat x'),
+    ])
+    def test_existing_behaviour_kept(self, cmd, expected):
+        assert fbc.fix_cmd_cd(cmd) == expected
+
+
 class TestCmdCdKeepsBashCd:
     """#79: the bash cd before cmd /c stays, so the commands after the cmd /c
     segment, its redirects and the Bash tool's next calls run where the
