@@ -16,7 +16,7 @@ The hard part is telling a command apart from text about a command: `python3` in
 | Reserved names | `> con`, `> prn`, `touch aux.txt` | Block | Reject -- undeletable files |
 | Commit messages | AI Co-Authored-By trailers, "Generated with" AI footers, emoji | Block (opt-in) | Reject with a message naming the check |
 | Doubled flags | `tasklist //fi` | Auto-fix | Rewrite to single `/`, only with `MSYS2_ARG_CONV_EXCL=*` (see [below](#recommended-setting-msys2_arg_conv_excl)) |
-| Backslash paths | `C:\Users\...` | Auto-fix | Rewrite to `C:/Users/...` only where the path is unquoted (`ls C:\Work` reaches `ls` as `C:Work`): command words, arguments and code. A quoted path (`'C:\x'`, `"C:\\x"`, also in code and heredocs) reaches the program intact and is left alone, since some programs need backslashes. Never in text, heredocs written to a file or wsl/ssh/adb arguments |
+| Backslash paths | `C:\Users\...` | Auto-fix | Rewrite to `C:/Users/...` where bash itself damages or uses the path: unquoted (`ls C:\Work` reaches `ls` as `C:Work`), in a word bash globs (`"C:\x"/*.txt`, bash globs only with `/`), or ending in `\"` (the backslash escapes the quote). Any other quoted path (`'C:\x'`, `"C:\\x"`, also in code and heredocs) reaches the program intact and is left alone, since some programs need backslashes. Never in text, heredocs written to a file or wsl/ssh/adb arguments |
 | UNC paths | `\\server\share\...` | Block | Suggest `//server/share/...` |
 | WSL invocation | `wsl ls`, `wsl.exe cat` | Block | Only when WSL is not installed; allowed when it is |
 | WSL mount paths | `/mnt/c/Users/...` | Auto-fix | Rewrite to `C:/Users/...` in Git Bash; left alone when the command invokes wsl, in text, ssh/adb shell arguments and heredoc bodies |
@@ -241,7 +241,7 @@ Before any fix runs, the Bash hook parses the command and labels every part of i
 | data | text no program runs: echo/printf arguments, `git commit -m`, `gh --body`, grep/sed/awk patterns, heredocs written to a file |
 | comment | `# ...` |
 
-Each fix decides where it applies. `python3` is fixed only as a command word, `/c/` paths in commands, arguments and code, `C:\` paths only where they are unquoted (where bash would strip the backslashes), `> nul` only as a real redirect. Literal text is not rewritten, so a commit message, a grep pattern or a file being written stays exactly as Claude wrote it. (The Windows env var fix is the one exception by design: it applies wherever bash would expand `$APPDATA` anyway, and only changes which path it expands to.)
+Each fix decides where it applies. `python3` is fixed only as a command word, `/c/` paths in commands, arguments and code, `C:\` paths only where bash itself would damage or glob them, `> nul` only as a real redirect. Literal text is not rewritten, so a commit message, a grep pattern or a file being written stays exactly as Claude wrote it. (The Windows env var fix is the one exception by design: it applies wherever bash would expand `$APPDATA` anyway, and only changes which path it expands to.)
 
 Some cases have no right rewrite, because only Claude knows what it meant. An example is a `$` in `pwsh -Command "..."`: it can be a bash or a PowerShell variable. There the hook blocks and says how to mark each case (`\$x` for PowerShell, an assignment in the same command for bash), and Claude reruns the command marked.
 

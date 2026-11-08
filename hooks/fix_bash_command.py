@@ -956,10 +956,49 @@ def fix_backslash_paths(cmd):
 
 
 def _backslash_path_position(parsed, pos):
-    """True where bash strips the backslashes of a path: an unquoted command
-    word, argument or code. Quoted text and heredocs keep them (#81)."""
+    """True where bash itself damages or uses a backslash path (#81):
+
+    - unquoted, in a command word, argument or code: bash strips the
+      backslashes;
+    - quoted, but in a word bash globs ("C:\\x"/*.txt): bash globs with /
+      as the only separator, so the pattern matches nothing;
+    - double-quoted and ending in an odd run of backslashes right before
+      the closing quote ("C:\\x\\"): the backslash escapes the quote.
+
+    Any other quoted path reaches the program as written and is left alone:
+    some programs need backslashes."""
     span = parsed.at(pos)
-    return span is not None and span.kind in ("cmd", "arg", "code") and span.quote == ""
+    if span is None or span.kind not in ("cmd", "arg", "code"):
+        return False
+    if span.quote == "":
+        return True
+    if span.quote not in ("'", '"'):
+        return False   # heredocs, $'...'
+    m = _BACKSLASH_PATH_RE.match(parsed.text, pos)
+    if span.quote == '"' and m and parsed.text[m.end():m.end() + 1] == '"':
+        trailing = len(m.group(0)) - len(m.group(0).rstrip("\\"))
+        if trailing % 2 == 1:
+            return True
+    return _in_glob_word(parsed, pos)
+
+
+_UNESCAPED_GLOB_RE = re.compile(r"(?<!\\)[*?\[]")
+
+
+def _in_glob_word(parsed, pos):
+    """True if the shell word around pos has an unquoted, unescaped glob
+    character, so bash does pathname expansion on the whole word."""
+    i = bisect.bisect_right(parsed.starts, pos) - 1
+    lo = i
+    while lo > 0 and parsed.spans[lo - 1].kind != "op":
+        lo -= 1
+    hi = i
+    while hi + 1 < len(parsed.spans) and parsed.spans[hi + 1].kind != "op":
+        hi += 1
+    for span in parsed.spans[lo:hi + 1]:
+        if span.quote == "" and _UNESCAPED_GLOB_RE.search(parsed.text, span.start, span.end):
+            return True
+    return False
 
 
 def check_unc_paths(cmd):
