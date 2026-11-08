@@ -5,7 +5,7 @@
   "_comment_msys2_drive_paths": "Auto-fix: /c/Users/... -> C:/Users/... (MSYS2 paths fail with Windows tools)",
   "msys2_drive_paths": true,
 
-  "_comment_backslash_paths": "Auto-fix: C:\\Users\\... -> C:/Users/... (backslashes break in bash)",
+  "_comment_backslash_paths": "Auto-fix: unquoted C:\\Users\\... -> C:/Users/... (bash strips unquoted backslashes; quoted paths are left alone)",
   "backslash_paths": true,
 
   "_comment_unc_paths": "Block: \\\\server\\share -> suggest //server/share",

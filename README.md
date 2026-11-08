@@ -16,7 +16,7 @@ The hard part is telling a command apart from text about a command: `python3` in
 | Reserved names | `> con`, `> prn`, `touch aux.txt` | Block | Reject -- undeletable files |
 | Commit messages | AI Co-Authored-By trailers, "Generated with" AI footers, emoji | Block (opt-in) | Reject with a message naming the check |
 | Doubled flags | `tasklist //fi` | Auto-fix | Rewrite to single `/`, only with `MSYS2_ARG_CONV_EXCL=*` (see [below](#recommended-setting-msys2_arg_conv_excl)) |
-| Backslash paths | `C:\Users\...` | Auto-fix | Rewrite to `C:/Users/...` in commands and arguments (single-quoted too), and in code where bash processes the backslashes (double quotes, unquoted heredocs); not in code bash passes on unchanged (single-quoted scripts, quoted heredocs), text, heredocs written to a file (a `.bat` keeps its backslashes) or wsl/ssh/adb arguments |
+| Backslash paths | `C:\Users\...` | Auto-fix | Rewrite to `C:/Users/...` where bash itself damages or uses the path: unquoted (`ls C:\Work` reaches `ls` as `C:Work`), in a word bash globs (`"C:\x"/*.txt`, bash globs only with `/`), or ending in `\"` (the backslash escapes the quote). Any other quoted path (`'C:\x'`, `"C:\\x"`, also in code and heredocs) reaches the program intact and is left alone, since some programs need backslashes. Never in text, heredocs written to a file or wsl/ssh/adb arguments |
 | UNC paths | `\\server\share\...` | Block | Suggest `//server/share/...` |
 | WSL invocation | `wsl ls`, `wsl.exe cat` | Block | Only when WSL is not installed; allowed when it is |
 | WSL mount paths | `/mnt/c/Users/...` | Auto-fix | Rewrite to `C:/Users/...` in Git Bash; left alone when the command invokes wsl, in text, ssh/adb shell arguments and heredoc bodies |
@@ -147,13 +147,13 @@ Claude Code does not set this itself. Only `*` switches conversion off completel
 
 ## Escape hatch: `# hook:verbatim`
 
-When a rewrite is wrong, for example because an old tool really needs backslashes in a path, Claude can run the command again with a trailing comment:
+When a rewrite is wrong, for example because a path belongs to a container rather than to Windows, Claude can run the command again with a trailing comment:
 
 ```
-legacy.exe /in 'C:\data\in.txt'  # hook:verbatim
+docker exec web ls /c/data  # hook:verbatim
 ```
 
-The hook then makes no change itself. If it would have changed something, it asks you first: the permission prompt lists each skipped rewrite (`'C:\data\in.txt' -> 'C:/data/in.txt'`), and the command runs unmodified only if you approve. If nothing would have changed, the marker does nothing. Blocking checks still apply, and so does the block on a real `> nul` redirect, because that creates a file Windows cannot delete.
+The hook then makes no change itself. If it would have changed something, it asks you first: the permission prompt lists each skipped rewrite (`/c/data -> C:/data`), and the command runs unmodified only if you approve. If nothing would have changed, the marker does nothing. Blocking checks still apply, and so does the block on a real `> nul` redirect, because that creates a file Windows cannot delete.
 
 Only a real top-level comment counts; the marker inside quotes, a heredoc or a code string is ignored, so documentation that mentions it does not trigger it. Claude learns about the marker from the hook's own message after a rewrite. Every use is logged with `"type": "verbatim"` and `"decision": "noop"` or `"ask"`.
 
@@ -241,7 +241,7 @@ Before any fix runs, the Bash hook parses the command and labels every part of i
 | data | text no program runs: echo/printf arguments, `git commit -m`, `gh --body`, grep/sed/awk patterns, heredocs written to a file |
 | comment | `# ...` |
 
-Each fix decides where it applies. `python3` is fixed only as a command word, `/c/` paths in commands, arguments and code, `> nul` only as a real redirect. Literal text is not rewritten, so a commit message, a grep pattern or a file being written stays exactly as Claude wrote it. (The Windows env var fix is the one exception by design: it applies wherever bash would expand `$APPDATA` anyway, and only changes which path it expands to.)
+Each fix decides where it applies. `python3` is fixed only as a command word, `/c/` paths in commands, arguments and code, `C:\` paths only where bash itself would damage or glob them, `> nul` only as a real redirect. Literal text is not rewritten, so a commit message, a grep pattern or a file being written stays exactly as Claude wrote it. (The Windows env var fix is the one exception by design: it applies wherever bash would expand `$APPDATA` anyway, and only changes which path it expands to.)
 
 Some cases have no right rewrite, because only Claude knows what it meant. An example is a `$` in `pwsh -Command "..."`: it can be a bash or a PowerShell variable. There the hook blocks and says how to mark each case (`\$x` for PowerShell, an assignment in the same command for bash), and Claude reruns the command marked.
 

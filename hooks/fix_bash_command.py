@@ -938,17 +938,16 @@ def fix_backslash_paths(cmd):
     how many times Claude doubled them. The drive letter must be at a word
     boundary (not mid-word like HKCU\Software).
 
-    Rewritten in command words and arguments whatever the quoting: forward
-    slashes work for virtually all Windows executables, single quotes
-    included (the step C measurement on #48: 45 SP='C:\...' rewrites, all
-    harmless). In code (python -c, pwsh, cmd /c, heredocs fed to an
-    interpreter) only where bash processes backslashes: unquoted, double
-    quotes, unquoted heredocs. Code bash passes on byte for byte (single
-    quotes, quoted heredocs) is left alone: a backslash path is valid there
-    and may be compared or replaced as a string. Also left alone: text
-    (echo, commit messages, grep/sed patterns), heredocs written to a file
-    (a .bat needs its backslashes), comments and wsl/ssh/adb arguments. A
-    tool that truly needs backslashes is run with # hook:verbatim.
+    Rewritten only where bash damages the path: unquoted, in a command word,
+    an argument or code (`ls C:\Work\x` reaches ls as C:Workx). Inside
+    quotes the path reaches the program as Claude meant it: single quotes
+    byte for byte, double quotes and unquoted heredocs turn \\ into \ and
+    keep a single \W. Those are left alone (#81), because the hook cannot
+    know whether the receiving program needs backslashes: a VMware shared
+    folder did, and the program is often a variable ("$VMRUN") or the path
+    is used on another machine. Also left alone: text (echo, commit
+    messages, grep/sed patterns), heredocs written to a file, comments and
+    wsl/ssh/adb arguments.
     """
     if ":\\" not in cmd:
         return cmd
@@ -957,12 +956,49 @@ def fix_backslash_paths(cmd):
 
 
 def _backslash_path_position(parsed, pos):
+    """True where bash itself damages or uses a backslash path (#81):
+
+    - unquoted, in a command word, argument or code: bash strips the
+      backslashes;
+    - quoted, but in a word bash globs ("C:\\x"/*.txt): bash globs with /
+      as the only separator, so the pattern matches nothing;
+    - double-quoted and ending in an odd run of backslashes right before
+      the closing quote ("C:\\x\\"): the backslash escapes the quote.
+
+    Any other quoted path reaches the program as written and is left alone:
+    some programs need backslashes."""
     span = parsed.at(pos)
-    if span is None:
+    if span is None or span.kind not in ("cmd", "arg", "code"):
         return False
-    if span.kind in ("cmd", "arg"):
+    if span.quote == "":
         return True
-    return span.kind == "code" and span.expands
+    if span.quote not in ("'", '"'):
+        return False   # heredocs, $'...'
+    m = _BACKSLASH_PATH_RE.match(parsed.text, pos)
+    if span.quote == '"' and m and parsed.text[m.end():m.end() + 1] == '"':
+        trailing = len(m.group(0)) - len(m.group(0).rstrip("\\"))
+        if trailing % 2 == 1:
+            return True
+    return _in_glob_word(parsed, pos)
+
+
+_UNESCAPED_GLOB_RE = re.compile(r"(?<!\\)[*?\[]")
+
+
+def _in_glob_word(parsed, pos):
+    """True if the shell word around pos has an unquoted, unescaped glob
+    character, so bash does pathname expansion on the whole word."""
+    i = bisect.bisect_right(parsed.starts, pos) - 1
+    lo = i
+    while lo > 0 and parsed.spans[lo - 1].kind != "op":
+        lo -= 1
+    hi = i
+    while hi + 1 < len(parsed.spans) and parsed.spans[hi + 1].kind != "op":
+        hi += 1
+    for span in parsed.spans[lo:hi + 1]:
+        if span.quote == "" and _UNESCAPED_GLOB_RE.search(parsed.text, span.start, span.end):
+            return True
+    return False
 
 
 def check_unc_paths(cmd):
